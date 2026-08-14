@@ -20,8 +20,13 @@ PLUGIN_DIR = Path(__file__).resolve().parent.parent
 
 
 def _install_stub_base() -> None:
-    if importlib.util.find_spec("src.plugins.base") is not None:
-        return
+    try:
+        # find_spec raises rather than returning None when a parent package is
+        # missing, which is exactly the standalone-checkout case.
+        if importlib.util.find_spec("src.plugins.base") is not None:
+            return
+    except (ImportError, AttributeError, ValueError):
+        pass
 
     src = types.ModuleType("src")
     plugins = types.ModuleType("src.plugins")

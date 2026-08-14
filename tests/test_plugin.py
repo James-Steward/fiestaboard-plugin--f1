@@ -379,7 +379,7 @@ class TestBoardFormatting:
         assert result.available is True
         assert len(result.formatted_lines) == rows
         for line in result.formatted_lines:
-            assert len(line) <= width, (mode, board, line)
+            assert tile_count(line) <= width, (mode, board, line, tile_count(line))
 
     def test_all_output_uses_board_safe_characters(self):
         plugin = make_plugin({"board": "flagship", "display_mode": "drivers"})
@@ -387,7 +387,8 @@ class TestBoardFormatting:
             data = plugin.fetch_data().data
 
         def check(value):
-            for char in value:
+            # Colour codes are template markup, not board characters.
+            for char in f1.COLOR_TOKEN.sub("", value):
                 assert char in f1.ALLOWED_CHARS, f"unsupported character {char!r} in {value!r}"
 
         for key, value in data.items():
@@ -464,6 +465,195 @@ class TestBoardFormatting:
             assert spec["group"] in groups, f"{name} references unknown group {spec['group']}"
             assert spec["type"] in {"string", "number", "boolean"}, name
             assert len(spec["example"]) <= spec["max_length"], f"{name} example exceeds its own max_length"
+
+
+# ----------------------------------------------------------------------
+# Session time formatting
+# ----------------------------------------------------------------------
+
+
+class TestTimeFormatting:
+    def test_times_carry_a_colon(self):
+        """Without one, "0030" reads as a year rather than half past midnight."""
+        plugin = make_plugin()
+        with patch.object(f1.requests, "get", side_effect=make_router(60 * 30)):
+            data = plugin.fetch_data().data
+
+        assert re.fullmatch(r"\d{2}:\d{2}", data["next_local_time"]), data["next_local_time"]
+        assert re.fullmatch(r"\d{2}:\d{2}", data["updated"]), data["updated"]
+
+    def test_date_is_weekday_and_numeric(self):
+        plugin = make_plugin()
+        with patch.object(f1.requests, "get", side_effect=make_router(60 * 30)):
+            data = plugin.fetch_data().data
+
+        # A numeric month keeps the weekday and still fits 15 tiles with the time.
+        assert re.fullmatch(r"[A-Z]{3} \d{2}/\d{2}", data["next_local_date"]), data["next_local_date"]
+        assert len(f"{data['next_local_date']} {data['next_local_time']}") == 15
+
+    def test_one_date_format_for_both_boards(self):
+        """The Note no longer needs its own compact variant."""
+        rendered = {}
+        for board in ("note", "flagship"):
+            plugin = make_plugin({"board": board, "display_mode": "countdown"})
+            with patch.object(f1.requests, "get", side_effect=make_router(60 * 30)):
+                result = plugin.fetch_data()
+            rendered[board] = result.data["next_local_date"]
+        assert rendered["note"] == rendered["flagship"]
+
+    @pytest.mark.parametrize("offset_minutes", [30, 90, 60 * 5, 60 * 13, 60 * 30, 60 * 24 * 6, 60 * 24 * 40])
+    def test_countdown_row_fits_a_note_at_any_hour(self, offset_minutes):
+        """Every clock time must fit; 23:00 is a tile wider than 0:00 would be."""
+        plugin = make_plugin({"board": "note", "display_mode": "countdown"})
+        with patch.object(f1.requests, "get", side_effect=make_router(offset_minutes)):
+            lines = plugin.fetch_data().formatted_lines
+
+        for line in lines:
+            assert tile_count(line) <= 15, f"{line!r} is {tile_count(line)} tiles"
+        assert ":" in lines[2], lines[2]
+
+    def test_flagship_keeps_the_roomier_date(self):
+        plugin = make_plugin({"board": "flagship", "display_mode": "countdown"})
+        with patch.object(f1.requests, "get", side_effect=make_router(60 * 30)):
+            lines = plugin.fetch_data().formatted_lines
+
+        assert re.search(r"[A-Z]{3} \d{2}/\d{2} \d{2}:\d{2}", lines[3]), lines[3]
+        for line in lines:
+            assert tile_count(line) <= 22
+
+
+# ----------------------------------------------------------------------
+# Team colour blocks on the standings pages
+# ----------------------------------------------------------------------
+
+GRID = [
+    ("mercedes", "Mercedes", "MER", "MERCEDES"),
+    ("ferrari", "Ferrari", "FER", "FERRARI"),
+    ("mclaren", "McLaren", "MCL", "MCLAREN"),
+    ("red_bull", "Red Bull", "RBR", "RED BULL"),
+    ("aston_martin", "Aston Martin", "AST", "ASTON"),
+    ("alpine", "Alpine", "ALP", "ALPINE"),
+    ("williams", "Williams", "WIL", "WILLIAMS"),
+    ("racing_bulls", "Racing Bulls", "RBT", "VCARB"),
+    ("audi", "Audi", "AUD", "AUDI"),
+    ("haas", "Haas", "HAA", "HAAS"),
+    ("cadillac", "Cadillac", "CAD", "CADILLAC"),
+]
+DRIVER_CODES = ["ANT", "HAM", "NOR", "VER", "ALO", "GAS", "SAI", "LAW", "HUL", "OCO", "BOR"]
+
+
+def full_grid_router(points="300"):
+    """Standings covering all eleven teams, so every colour cycle is exercised."""
+    drivers = {"MRData": {"StandingsTable": {"StandingsLists": [{
+        "season": "2026", "round": "11", "DriverStandings": [
+            {"position": str(i + 1), "points": points if i == 0 else str(300 - i * 20), "wins": "1",
+             "Driver": {"code": DRIVER_CODES[i], "familyName": DRIVER_CODES[i].title()},
+             "Constructors": [{"constructorId": t[0], "name": t[1]}]}
+            for i, t in enumerate(GRID)]}]}}}
+    constructors = {"MRData": {"StandingsTable": {"StandingsLists": [{
+        "season": "2026", "round": "11", "ConstructorStandings": [
+            {"position": str(i + 1), "points": str(400 - i * 25), "wins": "2",
+             "Constructor": {"constructorId": t[0], "name": t[1]}}
+            for i, t in enumerate(GRID)]}]}}}
+
+    def router(url, params=None, timeout=None):
+        if "driverstandings" in url:
+            return create_mock_response(drivers)
+        if "constructorstandings" in url:
+            return create_mock_response(constructors)
+        if "/sessions" in url:
+            return create_mock_response(build_sessions(60 * 24))
+        return create_mock_response([])
+
+    return router
+
+
+def colour_tiles(line):
+    return [t for t in f1.tiles(line) if f1.COLOR_TOKEN.fullmatch(t)]
+
+
+class TestColourBlocks:
+    def test_three_letter_codes(self):
+        plugin = make_plugin({"display_mode": "constructors"})
+        with patch.object(f1.requests, "get", side_effect=full_grid_router()):
+            data = plugin.fetch_data().data
+
+        actual = {c["short"]: c["code"] for c in data["constructors"]}
+        for _, _, code, short in GRID:
+            assert actual[short] == code, f"{short} should be {code}"
+
+    def test_every_team_has_colours(self):
+        for _, _, _, short in GRID:
+            assert f1.swatch(short, 5), f"{short} has no colour block"
+            assert len(f1.tiles(f1.swatch(short, 5))) == 5
+
+    @pytest.mark.parametrize("mode", ["drivers", "constructors"])
+    def test_note_rows_fill_exactly_fifteen_tiles(self, mode):
+        plugin = make_plugin({"board": "note", "display_mode": mode})
+        with patch.object(f1.requests, "get", side_effect=full_grid_router()):
+            lines = plugin.fetch_data().formatted_lines
+
+        for line in lines:
+            assert tile_count(line) == 15, f"{line!r} is {tile_count(line)} tiles"
+            assert len(colour_tiles(line)) == 5, f"{line!r} should have a 5-tile block"
+            # points sit in the final tiles, with a blank tile either side of the block
+            grid = f1.tiles(line)
+            indexes = [i for i, t in enumerate(grid) if f1.COLOR_TOKEN.fullmatch(t)]
+            assert grid[indexes[0] - 1] == " ", f"no gap before block in {line!r}"
+            assert grid[indexes[-1] + 1] == " ", f"no gap after block in {line!r}"
+            assert grid[-1] != " ", f"points not flush right in {line!r}"
+
+    @pytest.mark.parametrize("mode", ["drivers", "constructors"])
+    def test_flagship_rows_stay_uniform(self, mode):
+        plugin = make_plugin({"board": "flagship", "display_mode": mode})
+        with patch.object(f1.requests, "get", side_effect=full_grid_router()):
+            lines = plugin.fetch_data().formatted_lines
+
+        for line in lines[1:]:
+            assert tile_count(line) <= 22, f"{line!r} is {tile_count(line)} tiles"
+            assert len(colour_tiles(line)) <= f1.MAX_SWATCH_TILES
+
+    def test_half_points_shrink_the_block(self):
+        """A 5-character total steals tiles from the block rather than overflowing."""
+        plugin = make_plugin({"board": "note", "display_mode": "drivers"})
+        with patch.object(f1.requests, "get", side_effect=full_grid_router(points="300.5")):
+            lines = plugin.fetch_data().formatted_lines
+
+        assert tile_count(lines[0]) == 15
+        assert len(colour_tiles(lines[0])) == 3
+        assert lines[0].endswith("300.5")
+
+    def test_unknown_team_falls_back_to_plain_text(self):
+        assert f1.swatch("SOME NEW TEAM", 5) == ""
+        assert f1.swatch("MERCEDES", 0) == ""
+        assert f1.swatch(None, 5) == ""
+
+    def test_live_and_countdown_stay_colour_free(self):
+        for mode in ("live", "countdown"):
+            plugin = make_plugin({"board": "note", "display_mode": mode})
+            with patch.object(f1.requests, "get", side_effect=make_router(-60)):
+                lines = plugin.fetch_data().formatted_lines
+            for line in lines:
+                assert "{" not in line, f"{mode} should not emit colour codes: {line!r}"
+
+
+class TestTileHelpers:
+    def test_tiles_splits_colour_codes(self):
+        assert f1.tiles("AB{66}C") == ["A", "B", "{66}", "C"]
+        assert len(f1.tiles("1 ANT {66}{69}{66}{69}{66} 219")) == 15
+
+    def test_fit_truncates_by_tile_never_splitting_a_code(self):
+        assert f1.fit("{66}{69}{63}{64}", 2) == "{66}{69}"
+        assert f1.fit("ABCDEF", 3) == "ABC"
+
+    def test_fit_preserves_colours_and_alignment(self):
+        line = "1 ANT {66}{69}{66}{69}{66} 219"
+        assert f1.fit(line, 15) == line
+
+    def test_pad_row_measures_tiles_not_characters(self):
+        row = f1.pad_row("1 MER {66}{69}{66}{69}{66}", "379", 15)
+        assert len(f1.tiles(row)) == 15
+        assert row.endswith("379")
 
 
 # ----------------------------------------------------------------------

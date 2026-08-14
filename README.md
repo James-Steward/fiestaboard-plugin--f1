@@ -11,7 +11,7 @@ APIs. **No API key, no account, no paid tier.**
 +---------------+   +---------------+   +---------------+
 |NED RACE L34/72|   |NEXT ZANDVOORT |   |1 ANT       219|
 |1ANT 2HAM 3NOR |   |RACE IN 1D 5H  |   |2 HAM       169|
-|GAP +1.2 +2M   |   |SUN 23 AUG 2300|   |3 RUS     160.5|
+|GAP +1.2 +2M   |   |SUN 23/08 23:00|   |3 RUS     160.5|
 +---------------+   +---------------+   +---------------+
      live               countdown           standings
 ```
@@ -83,6 +83,27 @@ Everything written to the board passes through `sanitize()`, which:
 padding doing the column alignment survives. `pad_row()` left/right-justifies
 two fragments within the board width and truncates the left fragment when they
 would collide.
+
+### Colour tiles
+
+The standings pages emit Vestaboard colour codes (`{66}` and friends) for team
+blocks. A colour code is four characters of template text but exactly **one
+tile**, so anything that measures width has to count tiles, not characters —
+that's what `tiles()` is for, and why `fit()` and `pad_row()` both work in
+tiles. `_fold()` deliberately runs only over the non-colour segments so the
+braces survive sanitising.
+
+`swatch(team, count)` returns a run of tiles cycling the team's colours, or an
+empty string when the team is unmapped or there's no room, in which case the
+row falls back to plain right-aligned text. Blocks are capped at
+`MAX_SWATCH_TILES` so a short team name doesn't produce a much wider block than
+a long one on the same page.
+
+The consequence for `manifest.json` is that `line1`…`line6` declare a
+`max_length` in *characters* (40) that exceeds the board's tile count — the
+colour codes account for the difference.
+
+### Layout
 
 The plugin renders `line1`…`line6` (and `formatted_lines`) for the configured
 board — 3 rows × 15 columns for a Note, 6 × 22 for a Flagship — in one of four

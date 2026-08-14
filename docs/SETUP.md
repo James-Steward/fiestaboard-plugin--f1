@@ -92,7 +92,7 @@ itself between live timing and the countdown as the weekend progresses.
 +---------------+   +---------------+   +---------------+
 |NED RACE L34/72|   |NEXT ZANDVOORT |   |1 ANT       219|
 |1ANT 2HAM 3NOR |   |RACE IN 1D 5H  |   |2 HAM       169|
-|GAP +1.2 +2M   |   |SUN 23 AUG 2300|   |3 RUS     160.5|
+|GAP +1.2 +2M   |   |SUN 23/08 23:00|   |3 RUS     160.5|
 +---------------+   +---------------+   +---------------+
      live               countdown        drivers/constructors
 ```
@@ -104,11 +104,54 @@ itself between live timing and the countdown as the weekend progresses.
 |NED RACE        L34/72|   |NEXT UP            NED|
 |1 ANT         LEADER H|   |ZANDVOORT             |
 |2 HAM FERRARI   +1.2 S|   |RACE             1D 5H|
-|3 NOR MCLAREN      +2M|   |SUN 23 AUG 2300       |
+|3 NOR MCLAREN      +2M|   |SUN 23/08 23:00      |
 |4 RUS MERCEDES  +8.1 M|   |WDC            ANT 219|
 |5 LEC FERRARI  +12.4 H|   |WCC       MERCEDES 379|
 +----------------------+   +----------------------+
 ```
+
+### Team colours on the standings pages
+
+The driver and constructor standings render each team as a block of coloured
+tiles between the name and the points:
+
+```
++---------------+
+|1 ANT ##### 219|   green/white = Mercedes
+|2 HAM ##### 169|   solid red   = Ferrari
+|3 RUS ##### 160|
++---------------+
+```
+
+Vestaboard has seven colours, so a few are approximations — there's no teal
+tile, for instance, so Mercedes alternates green and white. Teams with two or
+three colours cycle, which keeps them distinct from solid-colour teams.
+
+| Code | Team | Tiles |
+| ---- | ---- | ----- |
+| `MCL` | McLaren | orange |
+| `FER` | Ferrari | red |
+| `MER` | Mercedes | green + white |
+| `RBR` | Red Bull | blue + red |
+| `AST` | Aston Martin | green |
+| `ALP` | Alpine | violet |
+| `WIL` | Williams | blue + white |
+| `RBT` | Racing Bulls | blue + white + red |
+| `AUD` | Audi | white |
+| `HAA` | Haas | white + red |
+| `CAD` | Cadillac | white + black |
+
+The three-letter codes appear on a Note, where a full team name would leave no
+room for colour. A Flagship shows full names. `VCARB` remains the team label
+everywhere else — live timing rows, `{{f1.wcc_leader}}`, `{{f1.live.N.team}}`.
+
+The block is five tiles wide when there's room. It shrinks rather than
+overflowing — a half-point total like `379.5` costs two tiles, so that row
+shows three. A team with no colour mapping falls back to plain text.
+
+To change a team's colours, edit `TEAM_COLORS` in `__init__.py`; the values are
+Vestaboard character codes (63 red, 64 orange, 65 yellow, 66 green, 67 blue,
+68 violet, 69 white, 70 black).
 
 ### Building your own page
 
@@ -138,7 +181,7 @@ Session, Championship and Display, each with a description and example value.
 | -------- | ------- |
 | `next_circuit` / `next_country` | `ZANDVOORT` / `NED` |
 | `next_session` | `RACE` |
-| `next_local_date` / `next_local_time` | `SUN 23 AUG` / `2300` |
+| `next_local_date` / `next_local_time` | `SUN 23/08` / `23:00` |
 | `countdown` | `1D 5H` |
 | `countdown_days` / `countdown_hours` / `countdown_minutes` | `1` / `5` / `12` |
 

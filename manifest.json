@@ -1,7 +1,7 @@
 {
   "id": "f1",
   "name": "Formula 1",
-  "version": "1.1.0",
+  "version": "1.3.0",
   "description": "Live F1 timing, next race countdown, and driver/constructor championship standings. No API key required.",
   "author": "James Steward",
   "repository": "https://github.com/James-Steward/fiestaboard-plugin--f1",
@@ -21,21 +21,34 @@
         "type": "string",
         "title": "Board Size",
         "description": "Which display the pre-built lines are formatted for.",
-        "enum": ["note", "flagship"],
+        "enum": [
+          "note",
+          "flagship"
+        ],
         "default": "note"
       },
       "display_mode": {
         "type": "string",
         "title": "Display Mode",
         "description": "What the pre-built lines show. 'auto' switches to live timing during a session, otherwise falls back to the mode below.",
-        "enum": ["auto", "live", "countdown", "drivers", "constructors"],
+        "enum": [
+          "auto",
+          "live",
+          "countdown",
+          "drivers",
+          "constructors"
+        ],
         "default": "auto"
       },
       "fallback_mode": {
         "type": "string",
         "title": "Fallback Mode (auto only)",
         "description": "What 'auto' shows when no session is live.",
-        "enum": ["countdown", "drivers", "constructors"],
+        "enum": [
+          "countdown",
+          "drivers",
+          "constructors"
+        ],
         "default": "countdown"
       },
       "timezone": {
@@ -95,11 +108,21 @@
   ],
   "variables": {
     "groups": {
-      "session": { "label": "Session" },
-      "timing": { "label": "Live Timing" },
-      "next": { "label": "Next Session" },
-      "championship": { "label": "Championship" },
-      "display": { "label": "Display" }
+      "session": {
+        "label": "Session"
+      },
+      "timing": {
+        "label": "Live Timing"
+      },
+      "next": {
+        "label": "Next Session"
+      },
+      "championship": {
+        "label": "Championship"
+      },
+      "display": {
+        "label": "Display"
+      }
     },
     "simple": {
       "status": {
@@ -271,18 +294,18 @@
         "example": "RACE"
       },
       "next_local_date": {
-        "description": "Date of the next session in your timezone",
+        "description": "Date of the next session in your timezone, as weekday and DD/MM",
         "type": "string",
-        "max_length": 10,
+        "max_length": 9,
         "group": "next",
-        "example": "SUN 23 AUG"
+        "example": "SAT 22/08"
       },
       "next_local_time": {
         "description": "Start time of the next session in your timezone, 24-hour",
         "type": "string",
         "max_length": 5,
         "group": "next",
-        "example": "2300"
+        "example": "00:30"
       },
       "countdown": {
         "description": "Time until the next session starts",
@@ -390,44 +413,44 @@
         "example": "LIVE"
       },
       "line1": {
-        "description": "Pre-built board row 1, laid out for your configured board size",
+        "description": "Pre-built board row 1, laid out for your configured board size (characters, not tiles: each {NN} colour code is 4 characters but 1 tile)",
         "type": "string",
-        "max_length": 22,
+        "max_length": 40,
         "group": "display",
-        "example": "NED RACE L34/72"
+        "example": "1 ANT {66}{69}{66}{69}{66} 219"
       },
       "line2": {
-        "description": "Pre-built board row 2",
+        "description": "Pre-built board row 2 (characters, not tiles: each {NN} colour code is 4 characters but 1 tile)",
         "type": "string",
-        "max_length": 22,
+        "max_length": 40,
         "group": "display",
-        "example": "1ANT 2HAM 3NOR"
+        "example": "2 HAM {63}{63}{63}{63}{63} 169"
       },
       "line3": {
-        "description": "Pre-built board row 3",
+        "description": "Pre-built board row 3 (characters, not tiles: each {NN} colour code is 4 characters but 1 tile)",
         "type": "string",
-        "max_length": 22,
+        "max_length": 40,
         "group": "display",
-        "example": "GAP +1.2 +4.8"
+        "example": "SAT 22/08 00:30"
       },
       "line4": {
-        "description": "Pre-built board row 4 (Flagship only; blank on a Note)",
+        "description": "Pre-built board row 4 (Flagship only; blank on a Note) (characters, not tiles: each {NN} colour code is 4 characters but 1 tile)",
         "type": "string",
-        "max_length": 22,
+        "max_length": 40,
         "group": "display",
         "example": "3 NOR MCLAREN +4.8"
       },
       "line5": {
-        "description": "Pre-built board row 5 (Flagship only; blank on a Note)",
+        "description": "Pre-built board row 5 (Flagship only; blank on a Note) (characters, not tiles: each {NN} colour code is 4 characters but 1 tile)",
         "type": "string",
-        "max_length": 22,
+        "max_length": 40,
         "group": "display",
         "example": "4 RUS MERCEDES +8.1"
       },
       "line6": {
-        "description": "Pre-built board row 6 (Flagship only; blank on a Note)",
+        "description": "Pre-built board row 6 (Flagship only; blank on a Note) (characters, not tiles: each {NN} colour code is 4 characters but 1 tile)",
         "type": "string",
-        "max_length": 22,
+        "max_length": 40,
         "group": "display",
         "example": "5 LEC FERRARI +12.4"
       },
@@ -436,7 +459,7 @@
         "type": "string",
         "max_length": 5,
         "group": "display",
-        "example": "2149"
+        "example": "21:49"
       }
     },
     "arrays": {
@@ -472,6 +495,7 @@
         "label_field": "short",
         "item_fields": [
           "position",
+          "code",
           "name",
           "short",
           "points",
@@ -507,7 +531,8 @@
     "constructors.*.points": 5,
     "constructors.*.wins": 2,
     "constructors.*.gap": 5,
-    "constructors.*.line": 22
+    "constructors.*.line": 22,
+    "constructors.*.code": 3
   },
   "fiestaboard_version": ">=2.10.0",
   "screenshots": [
@@ -516,6 +541,12 @@
       "alt": "Live F1 timing displayed on a Vestaboard Note",
       "caption": "Live positions, gaps and lap count during a session - no API key required",
       "primary": true
+    },
+    {
+      "src": "docs/standings-display.png",
+      "alt": "Driver championship standings with team colour blocks on a Vestaboard Note",
+      "caption": "Championship standings, with each driver's team shown as a block of Vestaboard colour tiles",
+      "primary": false
     }
   ],
   "teaser": "{66}NED RACE L34",
@@ -552,21 +583,52 @@
         "WCC {{f1.wcc_leader}} {{f1.wcc_points}}"
       ],
       "line_metadata": [
-        { "alignment": "center", "wrap": false },
-        { "alignment": "left", "wrap": false },
-        { "alignment": "left", "wrap": false },
-        { "alignment": "left", "wrap": false },
-        { "alignment": "left", "wrap": false },
-        { "alignment": "left", "wrap": false }
+        {
+          "alignment": "center",
+          "wrap": false
+        },
+        {
+          "alignment": "left",
+          "wrap": false
+        },
+        {
+          "alignment": "left",
+          "wrap": false
+        },
+        {
+          "alignment": "left",
+          "wrap": false
+        },
+        {
+          "alignment": "left",
+          "wrap": false
+        },
+        {
+          "alignment": "left",
+          "wrap": false
+        }
       ]
     },
     "note": {
       "name": "Formula 1 (Note)",
-      "template": ["{{f1.line1}}", "{{f1.line2}}", "{{f1.line3}}"],
+      "template": [
+        "{{f1.line1}}",
+        "{{f1.line2}}",
+        "{{f1.line3}}"
+      ],
       "line_metadata": [
-        { "alignment": "left", "wrap": false },
-        { "alignment": "left", "wrap": false },
-        { "alignment": "left", "wrap": false }
+        {
+          "alignment": "left",
+          "wrap": false
+        },
+        {
+          "alignment": "left",
+          "wrap": false
+        },
+        {
+          "alignment": "left",
+          "wrap": false
+        }
       ]
     }
   }

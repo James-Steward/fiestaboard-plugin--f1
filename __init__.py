@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import unicodedata
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
@@ -38,6 +39,36 @@ REQUEST_TIMEOUT = 12
 ALLOWED_CHARS = set(
     "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 !@#$()-+&=;:'\"%,./?°"
 )
+
+# A coloured tile is written as {NN} in template output and occupies exactly
+# one tile on the board, even though it is four characters of text.
+COLOR_TOKEN = re.compile(r"\{\d{2}\}")
+COLOR_SPLIT = re.compile(r"(\{\d{2}\})")
+
+RED, ORANGE, YELLOW, GREEN, BLUE, VIOLET, WHITE, BLACK = 63, 64, 65, 66, 67, 68, 69, 70
+
+# A Note fits exactly five colour tiles beside a code and a three-digit score.
+# The Flagship has room for more, but capping it keeps every row the same
+# shape whether the label is HAAS or RED BULL.
+MAX_SWATCH_TILES = 5
+
+# Team colours, expressed in the seven tiles a Vestaboard can actually show.
+# Multi-colour teams cycle, so a five-tile block reads as a repeating pattern
+# and stays distinguishable from a solid one.
+TEAM_COLORS = {
+    "MCLAREN": [ORANGE],
+    "FERRARI": [RED],
+    "MERCEDES": [GREEN, WHITE],
+    "RED BULL": [BLUE, RED],
+    "ASTON": [GREEN],
+    "ALPINE": [VIOLET],
+    "WILLIAMS": [BLUE, WHITE],
+    "VCARB": [BLUE, WHITE, RED],
+    "AUDI": [WHITE],
+    "SAUBER": [GREEN],
+    "HAAS": [WHITE, RED],
+    "CADILLAC": [WHITE, BLACK],
+}
 
 # Board geometry.
 BOARD_WIDTH = {"note": 15, "flagship": 22}
@@ -93,12 +124,30 @@ TEAM_SHORT = {
     "aston_martin": "ASTON",
     "alpine": "ALPINE",
     "williams": "WILLIAMS",
-    "rb": "RACING B",
-    "racing_bulls": "RACING B",
+    "rb": "VCARB",
+    "racing_bulls": "VCARB",
     "sauber": "SAUBER",
     "audi": "AUDI",
     "haas": "HAAS",
     "cadillac": "CADILLAC",
+}
+
+# Three-letter codes used on the Note, where a full team name would leave no
+# room for the colour block. Racing Bulls keeps its conventional timing code.
+TEAM_CODE = {
+    "mclaren": "MCL",
+    "mercedes": "MER",
+    "ferrari": "FER",
+    "red_bull": "RBR",
+    "aston_martin": "AST",
+    "alpine": "ALP",
+    "williams": "WIL",
+    "rb": "RBT",
+    "racing_bulls": "RBT",
+    "sauber": "SAU",
+    "audi": "AUD",
+    "haas": "HAA",
+    "cadillac": "CAD",
 }
 
 # OpenF1 team_name -> short label.
@@ -110,8 +159,8 @@ TEAM_SHORT_LIVE = {
     "Aston Martin": "ASTON",
     "Alpine": "ALPINE",
     "Williams": "WILLIAMS",
-    "Racing Bulls": "RACING B",
-    "RB": "RACING B",
+    "Racing Bulls": "VCARB",
+    "RB": "VCARB",
     "Kick Sauber": "SAUBER",
     "Audi": "AUDI",
     "Haas F1 Team": "HAAS",
@@ -134,6 +183,13 @@ SESSION_SHORT = {
 }
 
 
+def _fold(text: str) -> str:
+    """Uppercase, strip diacritics, and replace anything the board can't show."""
+    decomposed = unicodedata.normalize("NFKD", text)
+    stripped = "".join(c for c in decomposed if not unicodedata.combining(c))
+    return "".join(c if c in ALLOWED_CHARS else " " for c in stripped.upper())
+
+
 def sanitize(text: Any, limit: Optional[int] = None, collapse: bool = True) -> str:
     """Fold text down to characters a split-flap board can actually show.
 
@@ -143,32 +199,71 @@ def sanitize(text: Any, limit: Optional[int] = None, collapse: bool = True) -> s
     """
     if text is None:
         return ""
-    decomposed = unicodedata.normalize("NFKD", str(text))
-    stripped = "".join(c for c in decomposed if not unicodedata.combining(c))
-    upper = stripped.upper()
-    cleaned = "".join(c if c in ALLOWED_CHARS else " " for c in upper)
-    if collapse:
-        cleaned = " ".join(cleaned.split())
-    else:
-        cleaned = cleaned.rstrip()
-    if limit is not None:
-        cleaned = cleaned[:limit]
-    return cleaned
+    cleaned = _fold(str(text))
+    cleaned = " ".join(cleaned.split()) if collapse else cleaned.rstrip()
+    return cleaned[:limit] if limit is not None else cleaned
+
+
+def tiles(text: str) -> List[str]:
+    """Split a laid-out row into board tiles.
+
+    A colour code such as ``{66}`` is four characters of template text but
+    occupies exactly one tile, so width maths has to count tiles, not
+    characters.
+    """
+    out: List[str] = []
+    index = 0
+    while index < len(text):
+        match = COLOR_TOKEN.match(text, index)
+        if match:
+            out.append(match.group(0))
+            index = match.end()
+        else:
+            out.append(text[index])
+            index += 1
+    return out
 
 
 def fit(text: str, width: int) -> str:
-    """Truncate a laid-out row to width, preserving internal padding."""
-    return sanitize(text, collapse=False)[:width]
+    """Truncate a laid-out row to ``width`` tiles, keeping padding and colours."""
+    rebuilt = "".join(
+        piece if COLOR_TOKEN.fullmatch(piece) else _fold(piece)
+        for piece in COLOR_SPLIT.split(str(text))
+    )
+    return "".join(tiles(rebuilt)[:width]).rstrip()
 
 
-def pad_row(left: str, right: str, width: int) -> str:
-    """Left/right justify two fragments inside a row of the given width."""
-    left = sanitize(left)
-    right = sanitize(right)
-    if len(left) + len(right) + 1 > width:
-        left = left[: max(0, width - len(right) - 1)]
-    gap = width - len(left) - len(right)
-    return (left + " " * max(1, gap) + right)[:width]
+def swatch(team: Any, count: int) -> str:
+    """A run of ``count`` coloured tiles in the team's colours, or '' if it won't fit."""
+    if count < 1:
+        return ""
+    cycle = TEAM_COLORS.get(sanitize(team))
+    if not cycle:
+        return ""
+    return "".join("{%d}" % cycle[i % len(cycle)] for i in range(count))
+
+
+def _clean_fragment(value: Any) -> str:
+    """Board-safe text with colour codes left intact and whitespace collapsed."""
+    if value is None:
+        return ""
+    joined = "".join(
+        piece if COLOR_TOKEN.fullmatch(piece) else _fold(piece)
+        for piece in COLOR_SPLIT.split(str(value))
+    )
+    return " ".join(joined.split())
+
+
+def pad_row(left: Any, right: Any, width: int) -> str:
+    """Left/right justify two fragments inside a row, measured in board tiles."""
+    left = _clean_fragment(left)
+    right = _clean_fragment(right)
+    left_tiles, right_tiles = tiles(left), tiles(right)
+    if len(left_tiles) + len(right_tiles) + 1 > width:
+        left_tiles = left_tiles[: max(0, width - len(right_tiles) - 1)]
+        left = "".join(left_tiles)
+    gap = width - len(left_tiles) - len(right_tiles)
+    return left + " " * max(1, gap) + right
 
 
 class F1Plugin(PluginBase):
@@ -581,10 +676,12 @@ class F1Plugin(PluginBase):
                 points = _to_number(row.get("points"))
                 if leader_points is None:
                     leader_points = points
+                constructor_id = team.get("constructorId", "")
                 entry = {
                     "position": sanitize(row.get("position"), 2),
                     "name": sanitize(team.get("name"), 14),
-                    "short": sanitize(TEAM_SHORT.get(team.get("constructorId", ""), team.get("name", "")), 9),
+                    "short": sanitize(TEAM_SHORT.get(constructor_id, team.get("name", "")), 9),
+                    "code": sanitize(TEAM_CODE.get(constructor_id, team.get("name", "")[:3]), 3),
                     "points": _format_points(points),
                     "wins": sanitize(row.get("wins"), 2),
                     "gap": _format_points(leader_points - points) if leader_points is not None else "",
@@ -718,8 +815,11 @@ class F1Plugin(PluginBase):
                 countdown_target.get("session_name", "") if countdown_target else "",
                 sanitize(countdown_target.get("session_name", "") if countdown_target else "", 6),
             ),
-            "next_local_date": _local(countdown_target, tz, "%a %d %b") if countdown_target else "",
-            "next_local_time": _local(countdown_target, tz, "%H%M") if countdown_target else "",
+            # A numeric month keeps the weekday and still fits a Note in one
+            # format, so both board sizes render the same thing.
+            "next_local_date": _local(countdown_target, tz, "%a %d/%m") if countdown_target else "",
+            # The colon matters: without it "0030" reads as a year, not a time.
+            "next_local_time": _local(countdown_target, tz, "%H:%M") if countdown_target else "",
             "countdown": _format_countdown(days, hours, minutes),
             "countdown_days": days,
             "countdown_hours": hours,
@@ -735,7 +835,7 @@ class F1Plugin(PluginBase):
             "live": entries,
             "drivers": drivers,
             "constructors": constructors,
-            "updated": datetime.now(tz).strftime("%H%M"),
+            "updated": datetime.now(tz).strftime("%H:%M"),
         }
 
     def _resolve_mode(self, has_live: bool) -> str:
@@ -760,9 +860,16 @@ class F1Plugin(PluginBase):
         elif mode == "countdown":
             lines = self._countdown_lines(data, width, rows)
         elif mode == "constructors":
-            lines = self._table_lines(data.get("constructors", []), "WCC", "short", width, rows)
+            # A Note has no room for a full team name plus a colour block, so
+            # it falls back to the three-letter code.
+            label = "short" if width > 15 else "code"
+            lines = self._table_lines(
+                data.get("constructors", []), "WCC", label, width, rows, color_key="short"
+            )
         else:
-            lines = self._table_lines(data.get("drivers", []), "WDC", "code", width, rows)
+            lines = self._table_lines(
+                data.get("drivers", []), "WDC", "code", width, rows, color_key="team"
+            )
 
         lines = [fit(line, width) for line in lines][:rows]
         while len(lines) < rows:
@@ -797,6 +904,7 @@ class F1Plugin(PluginBase):
         circuit = data.get("next_circuit") or data.get("next_country") or "F1"
         countdown = data.get("countdown", "")
         session = data.get("next_session", "")
+        # "SAT 22/08 00:30" is exactly 15 tiles, so both boards share it.
         when = " ".join(x for x in (data.get("next_local_date", ""), data.get("next_local_time", "")) if x)
 
         if width <= 15:
@@ -817,24 +925,31 @@ class F1Plugin(PluginBase):
         return lines[:rows]
 
     def _table_lines(
-        self, rows_data: List[Dict[str, Any]], title: str, label_key: str, width: int, rows: int
+        self,
+        rows_data: List[Dict[str, Any]],
+        title: str,
+        label_key: str,
+        width: int,
+        rows: int,
+        color_key: Optional[str] = None,
     ) -> List[str]:
         lines: List[str] = []
         if width > 15:
             lines.append(pad_row(f"{title} STANDINGS", rows_data[0].get("round", "") if rows_data else "", width))
+
         available = rows - len(lines)
         for entry in rows_data[:available]:
-            label = entry.get(label_key, "")
-            if width <= 15:
-                lines.append(pad_row(f"{entry.get('position', '')} {label}", entry.get("points", ""), width))
-            else:
-                lines.append(
-                    pad_row(
-                        f"{entry.get('position', '')} {label} {entry.get('team', '')}".strip(),
-                        entry.get("points", ""),
-                        width,
-                    )
-                )
+            left = f"{entry.get('position', '')} {entry.get(label_key, '')}".strip()
+            if width > 15 and entry.get("team"):
+                left = f"{left} {entry['team']}"
+            points = entry.get("points", "")
+
+            # The colour block sits between the label and the points with a
+            # blank tile either side, capped so rows stay uniform. A long name
+            # or a half-point total shrinks it rather than overflowing.
+            room = min(MAX_SWATCH_TILES, width - len(left) - len(points) - 2)
+            block = swatch(entry.get(color_key, ""), room) if color_key else ""
+            lines.append(pad_row(f"{left} {block}" if block else left, points, width))
         return lines
 
     def get_formatted_display(self) -> Optional[List[str]]:
