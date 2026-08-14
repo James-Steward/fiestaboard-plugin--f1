@@ -1,6 +1,7 @@
 """Tests for the FiestaBoard F1 plugin."""
 
 import json
+import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
@@ -18,6 +19,20 @@ F1Plugin = f1.F1Plugin
 
 PLUGIN_DIR = Path(__file__).resolve().parent.parent
 NOW = datetime.now(timezone.utc)
+
+BOARD_WIDTHS = {"note": 15, "flagship": 22}
+BOARD_ROWS = {"note": 3, "flagship": 6}
+
+
+def tile_count(row: str) -> int:
+    """Board tiles a preview row occupies.
+
+    A numeric colour code like ``{66}`` renders as one coloured tile; a named
+    tag like ``{green}`` / ``{/green}`` wraps text and occupies none.
+    """
+    row = re.sub(r"\{/?[a-z_]+\}", "", row)
+    chips = len(re.findall(r"\{\d+\}", row))
+    return len(re.sub(r"\{\d+\}", "", row)) + chips
 
 
 def iso(moment: datetime) -> str:
@@ -236,7 +251,8 @@ class TestF1PluginCore(PluginTestCase):
             manifest = json.load(handle)
         assert manifest["version"].count(".") == 2
         assert manifest["category"] in {"art", "data", "transit", "weather", "entertainment", "utility", "home"}
-        assert "simple" in manifest["variables"]
+        assert isinstance(manifest["variables"]["simple"], dict)
+        assert isinstance(manifest["variables"]["groups"], dict)
         assert "arrays" in manifest["variables"]
 
     def test_live_session_returns_timing(self):
@@ -395,6 +411,10 @@ class TestBoardFormatting:
         for name in manifest["variables"]["arrays"]:
             assert name in data, f"array '{name}' declared in manifest but missing from data"
 
+        declared = set(manifest["variables"]["simple"]) | set(manifest["variables"]["arrays"])
+        extra = set(data) - declared
+        assert not extra, f"data returns undeclared keys: {sorted(extra)}"
+
     def test_array_items_expose_declared_fields(self):
         with open(PLUGIN_DIR / "manifest.json") as handle:
             manifest = json.load(handle)
@@ -407,7 +427,20 @@ class TestBoardFormatting:
                 for field in spec["item_fields"]:
                     assert field in item, f"{array_name}.{field} missing"
 
-    def test_simple_variables_respect_max_lengths(self):
+    def test_simple_variables_respect_declared_max_length(self):
+        with open(PLUGIN_DIR / "manifest.json") as handle:
+            manifest = json.load(handle)
+        plugin = make_plugin({"board": "flagship"})
+        with patch.object(f1.requests, "get", side_effect=make_router(-60)):
+            data = plugin.fetch_data().data
+
+        for name, spec in manifest["variables"]["simple"].items():
+            limit = spec["max_length"]
+            value = data.get(name)
+            if isinstance(value, str):
+                assert len(value) <= limit, f"{name} = {value!r} exceeds {limit}"
+
+    def test_array_items_respect_max_lengths(self):
         with open(PLUGIN_DIR / "manifest.json") as handle:
             manifest = json.load(handle)
         plugin = make_plugin({"board": "flagship"})
@@ -415,11 +448,73 @@ class TestBoardFormatting:
             data = plugin.fetch_data().data
 
         for name, limit in manifest["max_lengths"].items():
-            if "*" in name:
-                continue
-            value = data.get(name)
-            if isinstance(value, str):
+            array, _, field = name.split(".")
+            for item in data.get(array, []):
+                value = item.get(field, "")
                 assert len(value) <= limit, f"{name} = {value!r} exceeds {limit}"
+
+    def test_every_simple_variable_is_fully_described(self):
+        with open(PLUGIN_DIR / "manifest.json") as handle:
+            manifest = json.load(handle)
+        groups = set(manifest["variables"]["groups"])
+
+        for name, spec in manifest["variables"]["simple"].items():
+            for key in ("description", "type", "max_length", "group", "example"):
+                assert key in spec, f"{name} is missing '{key}'"
+            assert spec["group"] in groups, f"{name} references unknown group {spec['group']}"
+            assert spec["type"] in {"string", "number", "boolean"}, name
+            assert len(spec["example"]) <= spec["max_length"], f"{name} example exceeds its own max_length"
+
+
+# ----------------------------------------------------------------------
+# Plugin directory presentation (previews, teaser, demo, screenshots)
+# ----------------------------------------------------------------------
+
+
+class TestPresentation:
+    @staticmethod
+    def _manifest():
+        with open(PLUGIN_DIR / "manifest.json") as handle:
+            return json.load(handle)
+
+    def test_previews_fit_their_board(self):
+        for preview in self._manifest()["previews"]:
+            device = preview["device_type"]
+            width, rows = BOARD_WIDTHS[device], BOARD_ROWS[device]
+            assert len(preview["rows"]) == rows, f"{device} preview needs exactly {rows} rows"
+            for row in preview["rows"]:
+                assert tile_count(row) <= width, f"{device} preview row {row!r} is {tile_count(row)} tiles (max {width})"
+
+    def test_previews_cover_both_boards(self):
+        devices = {p["device_type"] for p in self._manifest()["previews"]}
+        assert devices == {"note", "flagship"}
+
+    def test_teaser_fits_a_note(self):
+        teaser = self._manifest()["teaser"]
+        assert tile_count(teaser) <= BOARD_WIDTHS["note"]
+
+    def test_demo_templates_reference_real_variables(self):
+        manifest = self._manifest()
+        known = set(manifest["variables"]["simple"]) | set(manifest["variables"]["arrays"])
+
+        for device, demo in manifest["demo"].items():
+            assert len(demo["template"]) == BOARD_ROWS[device], f"{device} demo needs {BOARD_ROWS[device]} rows"
+            assert len(demo["line_metadata"]) == len(demo["template"])
+            for reference in re.findall(r"\{\{f1\.([a-z0-9_.]+)\}\}", " ".join(demo["template"])):
+                root = reference.split(".")[0]
+                assert root in known, f"{device} demo references unknown variable f1.{reference}"
+
+    def test_screenshot_files_exist(self):
+        for shot in self._manifest().get("screenshots", []):
+            assert (PLUGIN_DIR / shot["src"]).exists(), f"missing screenshot {shot['src']}"
+            assert shot.get("alt"), "screenshots need alt text"
+
+    def test_preview_characters_are_board_safe(self):
+        for preview in self._manifest()["previews"]:
+            for row in preview["rows"]:
+                stripped = re.sub(r"\{/?[a-z_0-9]+\}", "", row)
+                for char in stripped:
+                    assert char in f1.ALLOWED_CHARS, f"unsupported character {char!r} in preview {row!r}"
 
 
 # ----------------------------------------------------------------------

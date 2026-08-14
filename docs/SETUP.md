@@ -7,8 +7,11 @@ the plugin and it works.
 
 ## 1. Install
 
-Push this folder to a public GitHub repository named
-`fiestaboard-plugin--f1`, then install it from your FiestaBoard host:
+### From a public git repository
+
+Push this folder to a **public** GitHub repository named
+`fiestaboard-plugin--f1`, then either paste the URL into **Integrations →
+Install Plugin from Git** in the web UI, or call the API directly:
 
 ```bash
 curl -X POST http://localhost:4420/api/plugins/install \
@@ -21,6 +24,23 @@ and loads it automatically — no restart needed.
 
 If you run FiestaBoard on a Raspberry Pi, run that command from the Pi (or
 point it at the Pi's address instead of `localhost`).
+
+### From a private repository
+
+FiestaBoard clones anonymously and has no way to pass credentials, so a
+private repo **cannot** be installed through the Git dialog or the API — it
+will fail to find the repository. Copy the folder into FiestaBoard's
+`external_plugins/` directory by hand instead and restart.
+
+Under the **Home Assistant add-on**, FiestaBoard's `/app/data` is mounted from
+HA's persistent `addon_config` volume, so that directory lives beneath
+`/addon_configs/<slug>_fiestaboard/`. Reach it with the *Samba share*, *File
+editor* or *Advanced SSH & Web Terminal* add-on. Installing any public plugin
+once will show you the exact subdirectory external plugins land in.
+
+Keep the folder named `fiestaboard-plugin--f1` — the plugin id (`f1`) is
+derived from it. Manual installs don't auto-update; re-copy the folder to
+upgrade.
 
 ## 2. Enable and configure
 
@@ -45,6 +65,12 @@ curl http://localhost:4420/api/plugins/f1/data
 ```
 
 ## 3. Put it on the board
+
+### The easiest way
+
+The plugin ships a ready-made demo page for both board sizes. On the plugin's
+page in **Integrations**, use the demo to drop a working F1 page straight into
+your Pages list, then edit it from there.
 
 ### The easy way
 
@@ -86,7 +112,9 @@ itself between live timing and the countdown as the weekend progresses.
 
 ### Building your own page
 
-Every value is also available individually, pre-truncated to fit.
+Every value is also available individually, pre-truncated to fit. In the Page
+Editor's **Variables** panel they're grouped under Session, Live Timing, Next
+Session, Championship and Display, each with a description and example value.
 
 **Session and live timing**
 

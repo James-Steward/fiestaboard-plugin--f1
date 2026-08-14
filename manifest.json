@@ -1,48 +1,41 @@
 {
   "id": "f1",
   "name": "Formula 1",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Live F1 timing, next race countdown, and driver/constructor championship standings. No API key required.",
   "author": "James Steward",
+  "repository": "https://github.com/James-Steward/fiestaboard-plugin--f1",
+  "documentation": "README.md",
   "icon": "flag",
   "category": "data",
-  "repository": "https://github.com/jsteward/fiestaboard-plugin--f1",
-  "documentation": "README.md",
+  "min_refresh_seconds": 10,
   "settings_schema": {
     "type": "object",
     "properties": {
+      "enabled": {
+        "type": "boolean",
+        "title": "Enabled",
+        "default": false
+      },
       "board": {
         "type": "string",
         "title": "Board Size",
         "description": "Which display the pre-built lines are formatted for.",
-        "enum": [
-          "note",
-          "flagship"
-        ],
+        "enum": ["note", "flagship"],
         "default": "note"
       },
       "display_mode": {
         "type": "string",
         "title": "Display Mode",
         "description": "What the pre-built lines show. 'auto' switches to live timing during a session, otherwise falls back to the mode below.",
-        "enum": [
-          "auto",
-          "live",
-          "countdown",
-          "drivers",
-          "constructors"
-        ],
+        "enum": ["auto", "live", "countdown", "drivers", "constructors"],
         "default": "auto"
       },
       "fallback_mode": {
         "type": "string",
         "title": "Fallback Mode (auto only)",
         "description": "What 'auto' shows when no session is live.",
-        "enum": [
-          "countdown",
-          "drivers",
-          "constructors"
-        ],
+        "enum": ["countdown", "drivers", "constructors"],
         "default": "countdown"
       },
       "timezone": {
@@ -84,7 +77,7 @@
       },
       "refresh_seconds": {
         "type": "integer",
-        "title": "Plugin Refresh Interval (seconds)",
+        "title": "Refresh Interval (seconds)",
         "description": "How often FiestaBoard asks this plugin for data. Live data is cached separately at the interval above.",
         "default": 30,
         "minimum": 10,
@@ -101,56 +94,351 @@
     }
   ],
   "variables": {
-    "simple": [
-      "status",
-      "mode",
-      "season",
-      "round",
-      "session_name",
-      "session_short",
-      "session_type",
-      "circuit",
-      "country",
-      "gp_name",
-      "flag",
-      "track_status",
-      "lap",
-      "lap_current",
-      "lap_total",
-      "leader",
-      "leader_name",
-      "leader_team",
-      "p1",
-      "p2",
-      "p3",
-      "gap_p2",
-      "gap_p3",
-      "next_gp",
-      "next_circuit",
-      "next_country",
-      "next_session",
-      "next_local_date",
-      "next_local_time",
-      "countdown",
-      "countdown_days",
-      "countdown_hours",
-      "countdown_minutes",
-      "wdc_leader",
-      "wdc_leader_name",
-      "wdc_team",
-      "wdc_points",
-      "wdc_gap",
-      "wcc_leader",
-      "wcc_points",
-      "wcc_gap",
-      "line1",
-      "line2",
-      "line3",
-      "line4",
-      "line5",
-      "line6",
-      "updated"
-    ],
+    "groups": {
+      "session": { "label": "Session" },
+      "timing": { "label": "Live Timing" },
+      "next": { "label": "Next Session" },
+      "championship": { "label": "Championship" },
+      "display": { "label": "Display" }
+    },
+    "simple": {
+      "status": {
+        "description": "Session state: LIVE while running, SOON just before or after, OFF otherwise",
+        "type": "string",
+        "max_length": 4,
+        "group": "session",
+        "example": "LIVE"
+      },
+      "session_name": {
+        "description": "Full session name from the timing feed",
+        "type": "string",
+        "max_length": 16,
+        "group": "session",
+        "example": "RACE"
+      },
+      "session_short": {
+        "description": "Abbreviated session name that fits a Note",
+        "type": "string",
+        "max_length": 6,
+        "group": "session",
+        "example": "QUALI"
+      },
+      "session_type": {
+        "description": "Session category: Practice, Qualifying or Race",
+        "type": "string",
+        "max_length": 10,
+        "group": "session",
+        "example": "RACE"
+      },
+      "circuit": {
+        "description": "Short circuit name for the live session",
+        "type": "string",
+        "max_length": 18,
+        "group": "session",
+        "example": "ZANDVOORT"
+      },
+      "country": {
+        "description": "Three-letter country code for the live session",
+        "type": "string",
+        "max_length": 3,
+        "group": "session",
+        "example": "NED"
+      },
+      "gp_name": {
+        "description": "Grand Prix name for the live session",
+        "type": "string",
+        "max_length": 22,
+        "group": "session",
+        "example": "NED GP"
+      },
+      "flag": {
+        "description": "Current track-wide flag or safety car state",
+        "type": "string",
+        "max_length": 13,
+        "group": "timing",
+        "example": "YELLOW"
+      },
+      "track_status": {
+        "description": "Alias of flag, for readability in templates",
+        "type": "string",
+        "max_length": 13,
+        "group": "timing",
+        "example": "SAFETY CAR"
+      },
+      "lap": {
+        "description": "Lap counter, with the total where the race distance is known",
+        "type": "string",
+        "max_length": 7,
+        "group": "timing",
+        "example": "L34/72"
+      },
+      "lap_current": {
+        "description": "Current lap number",
+        "type": "string",
+        "max_length": 2,
+        "group": "timing",
+        "example": "34"
+      },
+      "lap_total": {
+        "description": "Scheduled race distance in laps; blank if not known",
+        "type": "string",
+        "max_length": 2,
+        "group": "timing",
+        "example": "72"
+      },
+      "leader": {
+        "description": "Three-letter code of the driver currently leading",
+        "type": "string",
+        "max_length": 3,
+        "group": "timing",
+        "example": "ANT"
+      },
+      "leader_name": {
+        "description": "Surname of the driver currently leading",
+        "type": "string",
+        "max_length": 12,
+        "group": "timing",
+        "example": "ANTONELLI"
+      },
+      "leader_team": {
+        "description": "Team of the driver currently leading",
+        "type": "string",
+        "max_length": 9,
+        "group": "timing",
+        "example": "MERCEDES"
+      },
+      "p1": {
+        "description": "Driver code currently in first place",
+        "type": "string",
+        "max_length": 3,
+        "group": "timing",
+        "example": "ANT"
+      },
+      "p2": {
+        "description": "Driver code currently in second place",
+        "type": "string",
+        "max_length": 3,
+        "group": "timing",
+        "example": "HAM"
+      },
+      "p3": {
+        "description": "Driver code currently in third place",
+        "type": "string",
+        "max_length": 3,
+        "group": "timing",
+        "example": "NOR"
+      },
+      "gap_p2": {
+        "description": "Second place's gap to the leader",
+        "type": "string",
+        "max_length": 7,
+        "group": "timing",
+        "example": "+1.2"
+      },
+      "gap_p3": {
+        "description": "Third place's gap to the leader",
+        "type": "string",
+        "max_length": 7,
+        "group": "timing",
+        "example": "+4.8"
+      },
+      "next_gp": {
+        "description": "Grand Prix name of the next session",
+        "type": "string",
+        "max_length": 22,
+        "group": "next",
+        "example": "NED GP"
+      },
+      "next_circuit": {
+        "description": "Circuit hosting the next session",
+        "type": "string",
+        "max_length": 18,
+        "group": "next",
+        "example": "ZANDVOORT"
+      },
+      "next_country": {
+        "description": "Country code of the next session",
+        "type": "string",
+        "max_length": 3,
+        "group": "next",
+        "example": "NED"
+      },
+      "next_session": {
+        "description": "Which session is next: FP1, QUALI, SPRINT, RACE",
+        "type": "string",
+        "max_length": 6,
+        "group": "next",
+        "example": "RACE"
+      },
+      "next_local_date": {
+        "description": "Date of the next session in your timezone",
+        "type": "string",
+        "max_length": 10,
+        "group": "next",
+        "example": "SUN 23 AUG"
+      },
+      "next_local_time": {
+        "description": "Start time of the next session in your timezone, 24-hour",
+        "type": "string",
+        "max_length": 5,
+        "group": "next",
+        "example": "2300"
+      },
+      "countdown": {
+        "description": "Time until the next session starts",
+        "type": "string",
+        "max_length": 7,
+        "group": "next",
+        "example": "1D 5H"
+      },
+      "countdown_days": {
+        "description": "Whole days until the next session",
+        "type": "string",
+        "max_length": 3,
+        "group": "next",
+        "example": "1"
+      },
+      "countdown_hours": {
+        "description": "Hours component of the countdown",
+        "type": "string",
+        "max_length": 2,
+        "group": "next",
+        "example": "5"
+      },
+      "countdown_minutes": {
+        "description": "Minutes component of the countdown",
+        "type": "string",
+        "max_length": 2,
+        "group": "next",
+        "example": "12"
+      },
+      "season": {
+        "description": "Championship season the standings are drawn from",
+        "type": "string",
+        "max_length": 4,
+        "group": "championship",
+        "example": "2026"
+      },
+      "round": {
+        "description": "Round number the standings are current to",
+        "type": "string",
+        "max_length": 5,
+        "group": "championship",
+        "example": "11"
+      },
+      "wdc_leader": {
+        "description": "Driver code leading the championship",
+        "type": "string",
+        "max_length": 3,
+        "group": "championship",
+        "example": "ANT"
+      },
+      "wdc_leader_name": {
+        "description": "Surname of the championship leader",
+        "type": "string",
+        "max_length": 12,
+        "group": "championship",
+        "example": "ANTONELLI"
+      },
+      "wdc_team": {
+        "description": "Team of the championship leader",
+        "type": "string",
+        "max_length": 9,
+        "group": "championship",
+        "example": "MERCEDES"
+      },
+      "wdc_points": {
+        "description": "Points held by the championship leader",
+        "type": "string",
+        "max_length": 5,
+        "group": "championship",
+        "example": "219"
+      },
+      "wdc_gap": {
+        "description": "Championship leader's advantage over second place",
+        "type": "string",
+        "max_length": 5,
+        "group": "championship",
+        "example": "50"
+      },
+      "wcc_leader": {
+        "description": "Constructor leading the championship",
+        "type": "string",
+        "max_length": 9,
+        "group": "championship",
+        "example": "MERCEDES"
+      },
+      "wcc_points": {
+        "description": "Points held by the leading constructor",
+        "type": "string",
+        "max_length": 5,
+        "group": "championship",
+        "example": "379"
+      },
+      "wcc_gap": {
+        "description": "Leading constructor's advantage over second place",
+        "type": "string",
+        "max_length": 5,
+        "group": "championship",
+        "example": "72"
+      },
+      "mode": {
+        "description": "Which layout the pre-built lines are currently rendering",
+        "type": "string",
+        "max_length": 13,
+        "group": "display",
+        "example": "LIVE"
+      },
+      "line1": {
+        "description": "Pre-built board row 1, laid out for your configured board size",
+        "type": "string",
+        "max_length": 22,
+        "group": "display",
+        "example": "NED RACE L34/72"
+      },
+      "line2": {
+        "description": "Pre-built board row 2",
+        "type": "string",
+        "max_length": 22,
+        "group": "display",
+        "example": "1ANT 2HAM 3NOR"
+      },
+      "line3": {
+        "description": "Pre-built board row 3",
+        "type": "string",
+        "max_length": 22,
+        "group": "display",
+        "example": "GAP +1.2 +4.8"
+      },
+      "line4": {
+        "description": "Pre-built board row 4 (Flagship only; blank on a Note)",
+        "type": "string",
+        "max_length": 22,
+        "group": "display",
+        "example": "3 NOR MCLAREN +4.8"
+      },
+      "line5": {
+        "description": "Pre-built board row 5 (Flagship only; blank on a Note)",
+        "type": "string",
+        "max_length": 22,
+        "group": "display",
+        "example": "4 RUS MERCEDES +8.1"
+      },
+      "line6": {
+        "description": "Pre-built board row 6 (Flagship only; blank on a Note)",
+        "type": "string",
+        "max_length": 22,
+        "group": "display",
+        "example": "5 LEC FERRARI +12.4"
+      },
+      "updated": {
+        "description": "Local time this data was last refreshed, 24-hour",
+        "type": "string",
+        "max_length": 5,
+        "group": "display",
+        "example": "2149"
+      }
+    },
     "arrays": {
       "live": {
         "label_field": "code",
@@ -195,54 +483,6 @@
     }
   },
   "max_lengths": {
-    "status": 4,
-    "mode": 13,
-    "season": 4,
-    "round": 5,
-    "session_name": 16,
-    "session_short": 6,
-    "session_type": 10,
-    "circuit": 18,
-    "country": 3,
-    "gp_name": 22,
-    "flag": 13,
-    "track_status": 13,
-    "lap": 7,
-    "lap_current": 2,
-    "lap_total": 2,
-    "leader": 3,
-    "leader_name": 12,
-    "leader_team": 9,
-    "p1": 3,
-    "p2": 3,
-    "p3": 3,
-    "gap_p2": 7,
-    "gap_p3": 7,
-    "next_gp": 22,
-    "next_circuit": 18,
-    "next_country": 3,
-    "next_session": 6,
-    "next_local_date": 10,
-    "next_local_time": 5,
-    "countdown": 7,
-    "countdown_days": 3,
-    "countdown_hours": 2,
-    "countdown_minutes": 2,
-    "wdc_leader": 3,
-    "wdc_leader_name": 12,
-    "wdc_team": 9,
-    "wdc_points": 5,
-    "wdc_gap": 5,
-    "wcc_leader": 9,
-    "wcc_points": 5,
-    "wcc_gap": 5,
-    "line1": 22,
-    "line2": 22,
-    "line3": 22,
-    "line4": 22,
-    "line5": 22,
-    "line6": 22,
-    "updated": 5,
     "live.*.position": 2,
     "live.*.code": 3,
     "live.*.number": 2,
@@ -268,5 +508,66 @@
     "constructors.*.wins": 2,
     "constructors.*.gap": 5,
     "constructors.*.line": 22
+  },
+  "fiestaboard_version": ">=2.10.0",
+  "screenshots": [
+    {
+      "src": "docs/board-display.png",
+      "alt": "Live F1 timing displayed on a Vestaboard Note",
+      "caption": "Live positions, gaps and lap count during a session - no API key required",
+      "primary": true
+    }
+  ],
+  "teaser": "{66}NED RACE L34",
+  "previews": [
+    {
+      "device_type": "flagship",
+      "rows": [
+        "NED RACE        L34/72",
+        "1 ANT MERCEDES  LEADER",
+        "2 HAM FERRARI     +1.2",
+        "3 NOR MCLAREN     +4.8",
+        "4 RUS MERCEDES    +8.1",
+        "5 LEC FERRARI    +12.4"
+      ]
+    },
+    {
+      "device_type": "note",
+      "rows": [
+        "{66}NED RACE L34",
+        "1ANT 2HAM 3NOR",
+        "GAP +1.2 +4.8"
+      ]
+    }
+  ],
+  "demo": {
+    "flagship": {
+      "name": "Formula 1 Demo",
+      "template": [
+        "{{f1.country}} {{f1.session_short}} {{f1.lap}}",
+        "1 {{f1.p1}}",
+        "2 {{f1.p2}} {{f1.gap_p2}}",
+        "3 {{f1.p3}} {{f1.gap_p3}}",
+        "WDC {{f1.wdc_leader}} {{f1.wdc_points}}",
+        "WCC {{f1.wcc_leader}} {{f1.wcc_points}}"
+      ],
+      "line_metadata": [
+        { "alignment": "center", "wrap": false },
+        { "alignment": "left", "wrap": false },
+        { "alignment": "left", "wrap": false },
+        { "alignment": "left", "wrap": false },
+        { "alignment": "left", "wrap": false },
+        { "alignment": "left", "wrap": false }
+      ]
+    },
+    "note": {
+      "name": "Formula 1 (Note)",
+      "template": ["{{f1.line1}}", "{{f1.line2}}", "{{f1.line3}}"],
+      "line_metadata": [
+        { "alignment": "left", "wrap": false },
+        { "alignment": "left", "wrap": false },
+        { "alignment": "left", "wrap": false }
+      ]
+    }
   }
 }

@@ -93,6 +93,30 @@ If you'd rather design your own page, ignore the pre-built lines entirely and
 compose from the individual variables; they are all pre-truncated to the
 `max_lengths` declared in `manifest.json`.
 
+## A note on the manifest format
+
+`manifest.json` targets the format used by the plugins FiestaBoard ships
+today, **not** the one in the published Plugin Development Guide. The guide is
+still at version 6.1 while the app is on 8.x, and the two differ:
+
+| | Published guide (6.1) | Shipping plugins (8.x) |
+| --- | --- | --- |
+| `variables.simple` | array of names | object keyed by name, each with `description`, `type`, `max_length`, `group`, `example` |
+| `variables.groups` | — | groups variables in the editor's picker |
+| `max_lengths` | every variable | array wildcards only; simple vars carry `max_length` inline |
+| `previews` / `teaser` | — | board mock-ups on the plugin card |
+| `demo` | — | one-click starter page per board size |
+| `min_refresh_seconds`, `fiestaboard_version` | — | polling floor and compatibility range |
+
+If you're writing another plugin, read a current manifest from the registry
+(e.g. [`fiestaboard-plugin--stocks`](https://github.com/Fiestaboard/fiestaboard-plugin--stocks/blob/main/manifest.json))
+rather than following the guide alone.
+
+The test suite enforces the parts a validator won't catch: previews fit their
+board's tile count, the teaser fits a Note, demo templates only reference
+variables that exist, every variable declares a real group, and each example
+respects its own `max_length`.
+
 ## Development
 
 ```bash
