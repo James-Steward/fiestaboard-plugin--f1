@@ -1,0 +1,272 @@
+{
+  "id": "f1",
+  "name": "Formula 1",
+  "version": "1.0.0",
+  "description": "Live F1 timing, next race countdown, and driver/constructor championship standings. No API key required.",
+  "author": "James Steward",
+  "icon": "flag",
+  "category": "data",
+  "repository": "https://github.com/jsteward/fiestaboard-plugin--f1",
+  "documentation": "README.md",
+  "settings_schema": {
+    "type": "object",
+    "properties": {
+      "board": {
+        "type": "string",
+        "title": "Board Size",
+        "description": "Which display the pre-built lines are formatted for.",
+        "enum": [
+          "note",
+          "flagship"
+        ],
+        "default": "note"
+      },
+      "display_mode": {
+        "type": "string",
+        "title": "Display Mode",
+        "description": "What the pre-built lines show. 'auto' switches to live timing during a session, otherwise falls back to the mode below.",
+        "enum": [
+          "auto",
+          "live",
+          "countdown",
+          "drivers",
+          "constructors"
+        ],
+        "default": "auto"
+      },
+      "fallback_mode": {
+        "type": "string",
+        "title": "Fallback Mode (auto only)",
+        "description": "What 'auto' shows when no session is live.",
+        "enum": [
+          "countdown",
+          "drivers",
+          "constructors"
+        ],
+        "default": "countdown"
+      },
+      "timezone": {
+        "type": "string",
+        "title": "Timezone",
+        "description": "Timezone used for session start times and countdowns.",
+        "ui:widget": "timezone",
+        "default": "Australia/Sydney"
+      },
+      "include_practice": {
+        "type": "boolean",
+        "title": "Include Practice Sessions",
+        "description": "Treat free practice sessions as live/upcoming. Turn off to only track Qualifying, Sprint and Race.",
+        "default": true
+      },
+      "live_window_minutes": {
+        "type": "integer",
+        "title": "Live Window (minutes)",
+        "description": "How many minutes before a session starts and after it ends to keep showing live timing.",
+        "default": 15,
+        "minimum": 0,
+        "maximum": 120
+      },
+      "live_refresh_seconds": {
+        "type": "integer",
+        "title": "Live Refresh (seconds)",
+        "description": "How often to poll OpenF1 while a session is live. Lower values are more responsive but hit the API harder.",
+        "default": 20,
+        "minimum": 10,
+        "maximum": 300
+      },
+      "standings_refresh_seconds": {
+        "type": "integer",
+        "title": "Standings Refresh (seconds)",
+        "description": "How often to refresh championship standings from Jolpica.",
+        "default": 1800,
+        "minimum": 300,
+        "maximum": 86400
+      },
+      "refresh_seconds": {
+        "type": "integer",
+        "title": "Plugin Refresh Interval (seconds)",
+        "description": "How often FiestaBoard asks this plugin for data. Live data is cached separately at the interval above.",
+        "default": 30,
+        "minimum": 10,
+        "maximum": 3600
+      }
+    },
+    "required": []
+  },
+  "env_vars": [
+    {
+      "name": "F1_TIMEZONE",
+      "required": false,
+      "description": "Timezone override (can also be set in the web UI)."
+    }
+  ],
+  "variables": {
+    "simple": [
+      "status",
+      "mode",
+      "season",
+      "round",
+      "session_name",
+      "session_short",
+      "session_type",
+      "circuit",
+      "country",
+      "gp_name",
+      "flag",
+      "track_status",
+      "lap",
+      "lap_current",
+      "lap_total",
+      "leader",
+      "leader_name",
+      "leader_team",
+      "p1",
+      "p2",
+      "p3",
+      "gap_p2",
+      "gap_p3",
+      "next_gp",
+      "next_circuit",
+      "next_country",
+      "next_session",
+      "next_local_date",
+      "next_local_time",
+      "countdown",
+      "countdown_days",
+      "countdown_hours",
+      "countdown_minutes",
+      "wdc_leader",
+      "wdc_leader_name",
+      "wdc_team",
+      "wdc_points",
+      "wdc_gap",
+      "wcc_leader",
+      "wcc_points",
+      "wcc_gap",
+      "line1",
+      "line2",
+      "line3",
+      "line4",
+      "line5",
+      "line6",
+      "updated"
+    ],
+    "arrays": {
+      "live": {
+        "label_field": "code",
+        "item_fields": [
+          "position",
+          "code",
+          "number",
+          "name",
+          "team",
+          "gap",
+          "interval",
+          "tyre",
+          "tyre_age",
+          "line"
+        ]
+      },
+      "drivers": {
+        "label_field": "code",
+        "item_fields": [
+          "position",
+          "code",
+          "name",
+          "team",
+          "points",
+          "wins",
+          "gap",
+          "line"
+        ]
+      },
+      "constructors": {
+        "label_field": "short",
+        "item_fields": [
+          "position",
+          "name",
+          "short",
+          "points",
+          "wins",
+          "gap",
+          "line"
+        ]
+      }
+    }
+  },
+  "max_lengths": {
+    "status": 4,
+    "mode": 13,
+    "season": 4,
+    "round": 5,
+    "session_name": 16,
+    "session_short": 6,
+    "session_type": 10,
+    "circuit": 18,
+    "country": 3,
+    "gp_name": 22,
+    "flag": 13,
+    "track_status": 13,
+    "lap": 7,
+    "lap_current": 2,
+    "lap_total": 2,
+    "leader": 3,
+    "leader_name": 12,
+    "leader_team": 9,
+    "p1": 3,
+    "p2": 3,
+    "p3": 3,
+    "gap_p2": 7,
+    "gap_p3": 7,
+    "next_gp": 22,
+    "next_circuit": 18,
+    "next_country": 3,
+    "next_session": 6,
+    "next_local_date": 10,
+    "next_local_time": 5,
+    "countdown": 7,
+    "countdown_days": 3,
+    "countdown_hours": 2,
+    "countdown_minutes": 2,
+    "wdc_leader": 3,
+    "wdc_leader_name": 12,
+    "wdc_team": 9,
+    "wdc_points": 5,
+    "wdc_gap": 5,
+    "wcc_leader": 9,
+    "wcc_points": 5,
+    "wcc_gap": 5,
+    "line1": 22,
+    "line2": 22,
+    "line3": 22,
+    "line4": 22,
+    "line5": 22,
+    "line6": 22,
+    "updated": 5,
+    "live.*.position": 2,
+    "live.*.code": 3,
+    "live.*.number": 2,
+    "live.*.name": 12,
+    "live.*.team": 9,
+    "live.*.gap": 7,
+    "live.*.interval": 7,
+    "live.*.tyre": 1,
+    "live.*.tyre_age": 2,
+    "live.*.line": 22,
+    "drivers.*.position": 2,
+    "drivers.*.code": 3,
+    "drivers.*.name": 12,
+    "drivers.*.team": 9,
+    "drivers.*.points": 5,
+    "drivers.*.wins": 2,
+    "drivers.*.gap": 5,
+    "drivers.*.line": 22,
+    "constructors.*.position": 2,
+    "constructors.*.name": 14,
+    "constructors.*.short": 9,
+    "constructors.*.points": 5,
+    "constructors.*.wins": 2,
+    "constructors.*.gap": 5,
+    "constructors.*.line": 22
+  }
+}
