@@ -187,7 +187,7 @@ def make_router(race_offset_minutes=-60, *, empty_positions=False, standings=Tru
     """Return a requests.get replacement that serves canned API payloads."""
     sessions = build_sessions(race_offset_minutes)
 
-    def router(url, params=None, timeout=None):
+    def router(url, params=None, timeout=None, **kwargs):
         params = params or {}
         if fail and fail in url:
             raise requests.RequestException("boom")
@@ -325,7 +325,7 @@ class TestF1PluginCore(PluginTestCase):
         plugin = make_plugin()
         calls = {"n": 0}
 
-        def router(url, params=None, timeout=None):
+        def router(url, params=None, timeout=None, **kwargs):
             if "standings" in url:
                 calls["n"] += 1
                 # First two calls (current year) are empty, next two succeed.
@@ -468,6 +468,272 @@ class TestBoardFormatting:
 
 
 # ----------------------------------------------------------------------
+# Hostile / malformed upstream data
+#
+# Both APIs are unauthenticated and community-run, so every response is
+# untrusted input. None of it should be able to crash the plugin, blank the
+# board, inject board control codes, or exhaust memory.
+# ----------------------------------------------------------------------
+
+
+class TestUntrustedUpstream:
+    @pytest.mark.parametrize(
+        "hostile",
+        ["{66}{66}{66}", "NORRIS{63}", "{{f1.line1}}", "{/green}", "\x1b[31mRED", "{71}" * 50],
+    )
+    def test_upstream_cannot_inject_colour_tiles(self, hostile):
+        """Braces are not board characters, so sanitize() must strip them."""
+        cleaned = f1.sanitize(hostile, 12)
+        assert "{" not in cleaned and "}" not in cleaned, cleaned
+
+        row = f1.pad_row(cleaned, "999", 15)
+        assert not [t for t in f1.tiles(row) if f1.COLOR_TOKEN.fullmatch(t)]
+
+    def test_driver_named_with_a_colour_code_renders_as_text(self):
+        drivers = [{"driver_number": 12, "name_acronym": "{66}", "last_name": "{63}Evil", "team_name": "Mercedes"}]
+
+        def router(url, params=None, timeout=None, **kwargs):
+            if "/drivers" in url:
+                return create_mock_response(drivers)
+            return make_router(-60)(url, params, timeout)
+
+        plugin = make_plugin({"board": "note", "display_mode": "live"})
+        with patch.object(f1.requests, "get", side_effect=router):
+            data = plugin.fetch_data().data
+
+        for line in (data["line1"], data["line2"], data["line3"]):
+            assert "{" not in line, line
+
+    @pytest.mark.parametrize(
+        "position", ["P1", None, {"a": 1}, [], float("inf"), float("nan"), "1e400", 10**9, -5]
+    )
+    def test_unusable_position_drops_one_row_not_the_board(self, position):
+        positions = [
+            {"driver_number": 12, "position": 1, "date": iso(NOW)},
+            {"driver_number": 44, "position": position, "date": iso(NOW)},
+        ]
+
+        def router(url, params=None, timeout=None, **kwargs):
+            if "/position" in url:
+                return create_mock_response(positions)
+            return make_router(-60)(url, params, timeout)
+
+        plugin = make_plugin({"board": "note", "display_mode": "live"})
+        with patch.object(f1.requests, "get", side_effect=router):
+            result = plugin.fetch_data()
+
+        assert result.available is True, result.error
+        assert any(e["code"] == "ANT" for e in result.data["live"])
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            {"MRData": "not a dict"},
+            {"MRData": {"StandingsTable": []}},
+            {"MRData": {"StandingsTable": {"StandingsLists": "nope"}}},
+            {"MRData": {"StandingsTable": {"StandingsLists": [[]]}}},
+            {"MRData": {"StandingsTable": {"StandingsLists": [{"DriverStandings": "nope"}]}}},
+            {"MRData": {"StandingsTable": {"StandingsLists": [{"DriverStandings": ["a string"]}]}}},
+            {"MRData": {"StandingsTable": {"StandingsLists": [{"DriverStandings": [{"Driver": "x", "Constructors": "y"}]}]}}},
+            [],
+            None,
+        ],
+    )
+    def test_malformed_standings_never_crash(self, payload):
+        def router(url, params=None, timeout=None, **kwargs):
+            if "standings" in url:
+                return create_mock_response(payload)
+            return make_router(60 * 30)(url, params, timeout)
+
+        plugin = make_plugin({"display_mode": "countdown"})
+        with patch.object(f1.requests, "get", side_effect=router):
+            result = plugin.fetch_data()
+
+        assert result.available is True, result.error
+        assert isinstance(result.data["drivers"], list)
+
+    @pytest.mark.parametrize("garbage", ["not json", "", "[1,2,3]", '{"MRData": 1}'])
+    def test_non_json_and_scalar_bodies_are_survivable(self, garbage):
+        class Body:
+            headers = {}
+            status_code = 200
+
+            def raise_for_status(self):
+                pass
+
+            def iter_content(self, size):
+                yield garbage.encode()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        plugin = make_plugin()
+        with patch.object(f1.requests, "get", return_value=Body()):
+            result = plugin.fetch_data()
+        assert result.available in (True, False)  # never raises
+
+    def test_oversized_response_is_refused(self):
+        """A hostile upstream must not be able to buffer unbounded bytes."""
+        chunk = b"x" * (1024 * 1024)
+
+        class Huge:
+            headers = {}
+            status_code = 200
+            served = 0
+
+            def raise_for_status(self):
+                pass
+
+            def iter_content(self, size):
+                while True:
+                    Huge.served += len(chunk)
+                    yield chunk
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        with patch.object(f1.requests, "get", return_value=Huge()):
+            with pytest.raises(ValueError):
+                f1.F1Plugin._get_json("https://example.test/x")
+
+        assert Huge.served <= f1.MAX_RESPONSE_BYTES + len(chunk)
+
+    def test_declared_oversize_is_refused_before_reading(self):
+        class Declared:
+            headers = {"Content-Length": str(f1.MAX_RESPONSE_BYTES + 1)}
+            status_code = 200
+            read = False
+
+            def raise_for_status(self):
+                pass
+
+            def iter_content(self, size):
+                Declared.read = True
+                yield b"{}"
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        with patch.object(f1.requests, "get", return_value=Declared()):
+            with pytest.raises(ValueError):
+                f1.F1Plugin._get_json("https://example.test/x")
+        assert Declared.read is False
+
+    def test_row_count_is_capped(self):
+        flood = [{"driver_number": n, "position": 1, "date": iso(NOW)} for n in range(f1.MAX_ROWS * 2)]
+
+        def router(url, params=None, timeout=None, **kwargs):
+            if "/position" in url:
+                return create_mock_response(flood)
+            return make_router(-60)(url, params, timeout)
+
+        plugin = make_plugin({"display_mode": "live"})
+        with patch.object(f1.requests, "get", side_effect=router):
+            result = plugin.fetch_data()
+        assert result.available is True
+
+    def test_cache_stays_bounded(self):
+        """Cache keys include the session id, so a season must not accumulate."""
+        plugin = make_plugin()
+        for index in range(f1.MAX_CACHE_ENTRIES * 3):
+            plugin._cached(f"session:{index}", 3600, lambda: index)
+        assert len(plugin._cache) <= f1.MAX_CACHE_ENTRIES
+
+    @pytest.mark.parametrize("tz", ["../../../../etc/passwd", "/etc/passwd", "Nowhere/Nothing", ""])
+    def test_timezone_config_cannot_escape(self, tz):
+        plugin = make_plugin({"timezone": tz})
+        with patch.object(f1.requests, "get", side_effect=make_router(60 * 30)):
+            result = plugin.fetch_data()
+        assert result.available is True
+
+    @pytest.mark.parametrize("container", [{"evil": 1}, ["NED"], {"a": {"b": 1}}])
+    def test_container_valued_fields_never_reach_the_board(self, container):
+        """A dict where a name was expected must render as nothing, not its repr.
+
+        These are also unhashable, and several upstream fields are used as
+        dict lookup keys - which raised TypeError and blanked the board.
+        """
+        sessions = build_sessions(60 * 30)
+        for row in sessions:
+            row["session_name"] = container
+            row["circuit_short_name"] = container
+            row["country_code"] = container
+
+        def router(url, params=None, timeout=None, **kwargs):
+            if "/sessions" in url:
+                return create_mock_response(sessions)
+            return create_mock_response([])
+
+        plugin = make_plugin({"display_mode": "countdown"})
+        with patch.object(f1.requests, "get", side_effect=router):
+            result = plugin.fetch_data()
+
+        assert result.available is True, result.error
+        for key, value in result.data.items():
+            if isinstance(value, str):
+                # A leaked repr shows up as quotes; times legitimately have colons.
+                assert "'" not in value and '"' not in value, (key, value)
+                assert "EVIL" not in value.upper(), (key, value)
+
+    def test_sanitize_refuses_containers(self):
+        for container in ({"evil": 1}, ["x"], ("y",), set()):
+            assert f1.sanitize(container) == ""
+        assert f1.sanitize(42) == "42"
+        assert f1.sanitize("ok") == "OK"
+
+    def test_unhashable_team_identifiers_do_not_crash(self):
+        standings = {
+            "MRData": {"StandingsTable": {"StandingsLists": [{
+                "round": {"x": 1},
+                "ConstructorStandings": [
+                    {"position": "1", "points": "10",
+                     "Constructor": {"constructorId": {"a": 1}, "name": ["L"]}}
+                ],
+            }]}}
+        }
+
+        def router(url, params=None, timeout=None, **kwargs):
+            if "standings" in url:
+                return create_mock_response(standings)
+            return make_router(60 * 30)(url, params, timeout)
+
+        plugin = make_plugin({"display_mode": "constructors"})
+        with patch.object(f1.requests, "get", side_effect=router):
+            result = plugin.fetch_data()
+        assert result.available is True, result.error
+
+    def test_output_stays_board_safe_under_hostile_input(self):
+        drivers = [
+            {"driver_number": 12, "name_acronym": "Ünïcødé", "last_name": "A" * 400, "team_name": "{66}" * 20}
+        ]
+
+        def router(url, params=None, timeout=None, **kwargs):
+            if "/drivers" in url:
+                return create_mock_response(drivers)
+            return make_router(-60)(url, params, timeout)
+
+        plugin = make_plugin({"board": "flagship", "display_mode": "live"})
+        with patch.object(f1.requests, "get", side_effect=router):
+            data = plugin.fetch_data().data
+
+        for entry in data["live"]:
+            for key, value in entry.items():
+                if isinstance(value, str):
+                    assert all(c in f1.ALLOWED_CHARS for c in f1.COLOR_TOKEN.sub("", value)), (key, value)
+        for index in range(1, 7):
+            assert tile_count(data[f"line{index}"]) <= 22
+
+
+# ----------------------------------------------------------------------
 # Session time formatting
 # ----------------------------------------------------------------------
 
@@ -511,6 +777,117 @@ class TestTimeFormatting:
         for line in lines:
             assert tile_count(line) <= 15, f"{line!r} is {tile_count(line)} tiles"
         assert ":" in lines[2], lines[2]
+
+    @pytest.mark.parametrize("session_name", list(f1.SESSION_SHORT))
+    @pytest.mark.parametrize("offset_minutes", [12, 45, 90, 60 * 5, 60 * 23, 60 * 26, 60 * 24 * 13])
+    def test_every_session_name_fits_beside_every_countdown(self, session_name, offset_minutes):
+        """SQUALI is two characters longer than RACE, which is what broke this."""
+        sessions = build_sessions(offset_minutes)
+        for row in sessions:
+            row["session_name"] = session_name
+
+        def router(url, params=None, timeout=None, **kwargs):
+            if "/sessions" in url:
+                return create_mock_response(sessions)
+            return create_mock_response([])
+
+        plugin = make_plugin({"board": "note", "display_mode": "countdown"})
+        with patch.object(f1.requests, "get", side_effect=router):
+            lines = plugin.fetch_data().formatted_lines
+
+        for line in lines:
+            assert tile_count(line) <= 15, f"{session_name} @ {offset_minutes}m: {line!r}"
+        # the countdown must survive whole, never sliced mid-unit
+        assert lines[1].rstrip().endswith(("D", "H", "M", "SOON")), lines[1]
+
+    @pytest.mark.parametrize("days", [1, 9, 12, 99, 120])
+    def test_multi_digit_day_counts_fit(self, days):
+        """The winter break can be 100+ days; 'SQUALI 100D 23H' is exactly 15."""
+        plugin = make_plugin({"board": "note", "display_mode": "countdown"})
+        sessions = build_sessions(60 * 24 * days + 60 * 23)
+        for row in sessions:
+            row["session_name"] = "Sprint Qualifying"
+
+        def router(url, params=None, timeout=None, **kwargs):
+            if "/sessions" in url:
+                return create_mock_response(sessions)
+            return create_mock_response([])
+
+        with patch.object(f1.requests, "get", side_effect=router):
+            lines = plugin.fetch_data().formatted_lines
+
+        assert tile_count(lines[1]) <= 15, lines[1]
+        assert f"{days}D" in lines[1], lines[1]
+
+    @pytest.mark.parametrize(
+        "delta,expected",
+        [
+            (timedelta(days=11, hours=18), "11D 18H"),
+            (timedelta(days=2, hours=3), "2D 3H"),
+            (timedelta(hours=23, minutes=59), "23H 45M"),
+            (timedelta(hours=14, minutes=30), "14H 30M"),
+            (timedelta(hours=13, minutes=9), "13H 00M"),
+            (timedelta(hours=2), "2H 00M"),
+            (timedelta(minutes=59), "45M"),
+            (timedelta(minutes=45), "45M"),
+            (timedelta(minutes=44), "30M"),
+            (timedelta(minutes=15), "15M"),
+            (timedelta(minutes=14), "SOON"),
+            (timedelta(minutes=1), "SOON"),
+        ],
+    )
+    def test_countdown_granularity(self, delta, expected):
+        """Minutes are bucketed so the board isn't flapping every minute."""
+        assert f1._format_countdown(*f1._split_delta(delta)) == expected
+
+    def test_countdown_step_is_configurable(self):
+        assert f1._format_countdown("", "", "38", step=1) == "38M"
+        assert f1._format_countdown("", "", "38", step=5) == "35M"
+        assert f1._format_countdown("", "", "38", step=30) == "30M"
+        assert f1._format_countdown("", "", "38", step=60) == "SOON"
+
+    def test_board_changes_four_times_an_hour_inside_a_day(self):
+        """The reported problem: 13H 09M ticking every minute for hours."""
+        seen = []
+        for minutes_left in range(24 * 60 - 1, 0, -1):
+            value = f1._format_countdown("0", str(minutes_left // 60), str(minutes_left % 60), step=15)
+            if not seen or seen[-1] != value:
+                seen.append(value)
+
+        # 23 hours x 4 buckets, then the final hour's 45/30/15/SOON
+        assert len(seen) == 24 * 4, len(seen)
+        assert seen[0] == "23H 45M"
+        assert seen[-4:] == ["45M", "30M", "15M", "SOON"]
+        assert all(re.fullmatch(r"(\d+H \d{2}M|\d+M|SOON)", v) for v in seen)
+
+    @pytest.mark.parametrize("hour", range(1, 24))
+    def test_only_the_minutes_move_within_an_hour(self, hour):
+        """13H 45M -> 13H 30M flips two tiles, not the whole row."""
+        rendered = [f1._format_countdown("0", str(hour), str(m), step=15) for m in (0, 15, 30, 45, 59)]
+
+        assert len({len(v) for v in rendered}) == 1, rendered
+        prefixes = {v.split()[0] for v in rendered}
+        assert prefixes == {f"{hour}H"}, prefixes
+        assert [v.split()[1] for v in rendered] == ["00M", "15M", "30M", "45M", "45M"]
+
+    def test_board_changes_at_most_four_times_in_the_final_hour(self):
+        """The whole point: a split-flap board is noisy, so count the changes."""
+        seen = []
+        # 60 minutes out is "1H"; the minute branch only sees 59 and below.
+        for minutes_left in range(59, 0, -1):
+            value = f1._format_countdown("", "", str(minutes_left), step=15)
+            if not seen or seen[-1] != value:
+                seen.append(value)
+        assert seen == ["45M", "30M", "15M", "SOON"], seen
+
+    def test_component_variables_stay_exact(self):
+        """countdown is rounded for the board; the components are not."""
+        plugin = make_plugin({"countdown_step_minutes": 15})
+        with patch.object(f1.requests, "get", side_effect=make_router(38)):
+            data = plugin.fetch_data().data
+
+        assert data["countdown"] == "30M"
+        assert data["countdown_minutes"] in {"37", "38"}
 
     def test_flagship_keeps_the_roomier_date(self):
         plugin = make_plugin({"board": "flagship", "display_mode": "countdown"})
@@ -556,7 +933,7 @@ def full_grid_router(points="300"):
              "Constructor": {"constructorId": t[0], "name": t[1]}}
             for i, t in enumerate(GRID)]}]}}}
 
-    def router(url, params=None, timeout=None):
+    def router(url, params=None, timeout=None, **kwargs):
         if "driverstandings" in url:
             return create_mock_response(drivers)
         if "constructorstandings" in url:
@@ -876,8 +1253,8 @@ class TestHelpers:
         "delta,expected",
         [
             (timedelta(days=2, hours=3), "2D 3H"),
-            (timedelta(hours=5, minutes=20), "5H 20M"),
-            (timedelta(minutes=42), "42M"),
+            (timedelta(hours=5, minutes=20), "5H 15M"),
+            (timedelta(minutes=42), "30M"),
             (timedelta(seconds=-5), ""),
             (None, ""),
         ],

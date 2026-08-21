@@ -108,12 +108,23 @@ def _install_stub_base() -> None:
             return self._manifest.get("env_vars", [])
 
     class _MockResponse:
+        """Mirrors the streaming interface the plugin actually uses."""
+
         def __init__(self, data=None, status_code=200):
             self._data = data if data is not None else {}
             self.status_code = status_code
+            self.headers = {}
 
         def json(self):
             return self._data
+
+        def iter_content(self, chunk_size=None):
+            import json as _json
+
+            yield _json.dumps(self._data).encode()
+
+        def close(self):
+            return None
 
         def raise_for_status(self):
             if self.status_code >= 400:

@@ -51,6 +51,7 @@ Open **http://localhost:4420 → Integrations → Formula 1** and switch it on.
 | **Board Size** | `note` | `note` = 15×3, `flagship` = 22×6. Sets the width the pre-built lines are laid out for. |
 | **Display Mode** | `auto` | `auto` shows live timing during a session and the fallback mode otherwise. Or pin it to `live`, `countdown`, `drivers`, `constructors`. |
 | **Fallback Mode** | `countdown` | What `auto` shows between sessions. |
+| **Countdown Step (minutes)** | 15 | How coarsely the countdown is rounded below 24 hours. At 15 the board changes four times an hour. Set to 1 for a minute-by-minute countdown. |
 | **Timezone** | `Australia/Sydney` | Used for session start times and countdowns. Set this to your own zone. |
 | **Include Practice Sessions** | on | Turn off if you only care about Qualifying, Sprint and Race. |
 | **Live Window (minutes)** | 15 | How long before/after a session to keep showing live timing. |
@@ -91,7 +92,7 @@ itself between live timing and the countdown as the weekend progresses.
 ```
 +---------------+   +---------------+   +---------------+
 |NED RACE L34/72|   |NEXT ZANDVOORT |   |1 ANT       219|
-|1ANT 2HAM 3NOR |   |RACE IN 1D 5H  |   |2 HAM       169|
+|1ANT 2HAM 3NOR |   |RACE    13H 45M|   |2 HAM       169|
 |GAP +1.2 +2M   |   |SUN 23/08 23:00|   |3 RUS     160.5|
 +---------------+   +---------------+   +---------------+
      live               countdown        drivers/constructors
@@ -103,12 +104,35 @@ itself between live timing and the countdown as the weekend progresses.
 +----------------------+   +----------------------+
 |NED RACE        L34/72|   |NEXT UP            NED|
 |1 ANT         LEADER H|   |ZANDVOORT             |
-|2 HAM FERRARI   +1.2 S|   |RACE             1D 5H|
-|3 NOR MCLAREN      +2M|   |SUN 23/08 23:00      |
+|2 HAM FERRARI   +1.2 S|   |RACE           13H 45M|
+|3 NOR MCLAREN      +2M|   |SUN 23/08 23:00       |
 |4 RUS MERCEDES  +8.1 M|   |WDC            ANT 219|
 |5 LEC FERRARI  +12.4 H|   |WCC       MERCEDES 379|
 +----------------------+   +----------------------+
 ```
+
+### How often the board moves
+
+A split-flap board is audible, so the countdown is deliberately coarse. Inside
+the last 24 hours it changes four times an hour — 96 times in total, rather
+than 1440:
+
+```
+23H 45M -> 23H 30M -> 23H 15M -> 23H 00M -> 22H 45M -> ...
+   ... -> 1H 00M -> 45M -> 30M -> 15M -> SOON
+```
+
+Only the minutes move within an hour, so a change flips two tiles rather than
+the whole row. Above 24 hours it shows days and hours (`6D 22H`) and changes
+hourly. Set **Countdown Step** to 1 for a minute-by-minute countdown.
+
+Two things will still move the board every minute if you put them on a page:
+`{{f1.updated}}` and `{{f1.countdown_minutes}}`. Both are deliberately exact.
+
+During a session the board updates at **Live Refresh** (20s default). For
+overnight sessions — and a European race weekend has several, in Australian
+time — FiestaBoard's own **Silence Schedule** will hold the board still
+without disabling the plugin.
 
 ### Team colours on the standings pages
 
@@ -182,8 +206,8 @@ Session, Championship and Display, each with a description and example value.
 | `next_circuit` / `next_country` | `ZANDVOORT` / `NED` |
 | `next_session` | `RACE` |
 | `next_local_date` / `next_local_time` | `SUN 23/08` / `23:00` |
-| `countdown` | `1D 5H` |
-| `countdown_days` / `countdown_hours` / `countdown_minutes` | `1` / `5` / `12` |
+| `countdown` | `13H 45M` — days above 24h, otherwise rounded to the Countdown Step, then `SOON` |
+| `countdown_days` / `countdown_hours` / `countdown_minutes` | `1` / `5` / `12` (exact, unrounded) |
 
 **Championship**
 

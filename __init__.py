@@ -8,6 +8,7 @@ Data sources (both free, no API key required):
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
@@ -34,6 +35,12 @@ OPENF1_BASE = "https://api.openf1.org/v1"
 JOLPICA_BASE = "https://api.jolpi.ca/ergast/f1"
 
 REQUEST_TIMEOUT = 12
+
+# Both upstreams are unauthenticated and community-run, so treat every
+# response as untrusted input rather than assuming it is well-behaved.
+MAX_RESPONSE_BYTES = 8 * 1024 * 1024
+MAX_ROWS = 20_000
+MAX_CACHE_ENTRIES = 64
 
 # Vestaboard's printable character set (uppercase only, plus these symbols).
 ALLOWED_CHARS = set(
@@ -196,10 +203,11 @@ def sanitize(text: Any, limit: Optional[int] = None, collapse: bool = True) -> s
     ``collapse`` squeezes runs of whitespace, which is right for raw API
     values but wrong for already-laid-out rows where the padding *is* the
     column alignment.
+
+    Containers render as "" rather than their Python repr: an upstream field
+    that arrives as a dict should show nothing, not ``{'evil': 1}``.
     """
-    if text is None:
-        return ""
-    cleaned = _fold(str(text))
+    cleaned = _fold(_text(text))
     cleaned = " ".join(cleaned.split()) if collapse else cleaned.rstrip()
     return cleaned[:limit] if limit is not None else cleaned
 
@@ -304,6 +312,7 @@ class F1Plugin(PluginBase):
                 errors.append(f"Invalid timezone: {tz_name}")
 
         for key, low, high in (
+            ("countdown_step_minutes", 1, 60),
             ("live_window_minutes", 0, 120),
             ("live_refresh_seconds", 10, 300),
             ("standings_refresh_seconds", 300, 86400),
@@ -353,21 +362,71 @@ class F1Plugin(PluginBase):
             return hit[1]
         value = loader()
         self._cache[key] = (now, value)
+        self._evict()
         return value
+
+    def _evict(self) -> None:
+        """Keep the cache bounded.
+
+        Keys include the session id, so a long-running board would otherwise
+        accumulate one roster, one snapshot and one flag entry per session for
+        the whole season and never release them.
+        """
+        if len(self._cache) <= MAX_CACHE_ENTRIES:
+            return
+        for key, _ in sorted(self._cache.items(), key=lambda item: item[1][0])[
+            : len(self._cache) - MAX_CACHE_ENTRIES
+        ]:
+            self._cache.pop(key, None)
 
     @staticmethod
     def _get_json(url: str, params: Optional[Dict[str, Any]] = None) -> Any:
-        response = requests.get(url, params=params or {}, timeout=REQUEST_TIMEOUT)
-        response.raise_for_status()
-        return response.json()
+        """GET and parse JSON, refusing to buffer an unreasonable response.
+
+        Both APIs are community-run and unauthenticated. A compromised or
+        simply broken upstream returning an enormous body would otherwise be
+        read straight into memory on someone's Pi or NAS.
+        """
+        response = requests.get(url, params=params or {}, timeout=REQUEST_TIMEOUT, stream=True)
+        try:
+            response.raise_for_status()
+
+            declared = getattr(response, "headers", {}).get("Content-Length")
+            if declared and str(declared).isdigit() and int(declared) > MAX_RESPONSE_BYTES:
+                raise ValueError(f"{url} declared {declared} bytes, over the {MAX_RESPONSE_BYTES} limit")
+
+            # Test doubles frequently implement json() but not the streaming
+            # interface, so fall back rather than depend on the mock's shape.
+            if not hasattr(response, "iter_content"):
+                return response.json()
+
+            chunks: List[bytes] = []
+            total = 0
+            for chunk in response.iter_content(64 * 1024):
+                total += len(chunk)
+                if total > MAX_RESPONSE_BYTES:
+                    raise ValueError(f"{url} exceeded the {MAX_RESPONSE_BYTES} byte limit")
+                chunks.append(chunk)
+        finally:
+            closer = getattr(response, "close", None)
+            if callable(closer):
+                closer()
+
+        return json.loads(b"".join(chunks) or b"null")
 
     def _openf1(self, endpoint: str, params: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
         data = self._get_json(f"{OPENF1_BASE}/{endpoint}", params)
-        return data if isinstance(data, list) else []
+        if not isinstance(data, list):
+            return []
+        # Guard the loops downstream as well as the transfer itself.
+        return [row for row in data[:MAX_ROWS] if isinstance(row, dict)]
 
     def _jolpica(self, path: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         data = self._get_json(f"{JOLPICA_BASE}/{path}", params)
-        return data.get("MRData", {}) if isinstance(data, dict) else {}
+        if not isinstance(data, dict):
+            return {}
+        mrdata = data.get("MRData", {})
+        return mrdata if isinstance(mrdata, dict) else {}
 
     # ------------------------------------------------------------------
     # Calendar
@@ -444,14 +503,19 @@ class F1Plugin(PluginBase):
         roster = self._cached(
             f"roster:{key}",
             3600,
-            lambda: {d["driver_number"]: d for d in self._openf1("drivers", {"session_key": key})},
+            lambda: {
+                n: d
+                for d in self._openf1("drivers", {"session_key": key})
+                for n in [_as_int(d.get("driver_number"))]
+                if n is not None
+            },
         )
 
         since = (now - timedelta(minutes=20)).strftime("%Y-%m-%dT%H:%M:%S")
         positions = self._openf1("position", {"session_key": key, "date>": since})
         latest_pos: Dict[int, Dict[str, Any]] = {}
         for row in positions:
-            number = row.get("driver_number")
+            number = _as_int(row.get("driver_number"))
             if number is None:
                 continue
             current = latest_pos.get(number)
@@ -462,7 +526,7 @@ class F1Plugin(PluginBase):
         if not latest_pos:
             # Session over (or not started): fall back to the classification.
             for row in self._openf1("session_result", {"session_key": key}):
-                number = row.get("driver_number")
+                number = _as_int(row.get("driver_number"))
                 if number is not None and row.get("position") is not None:
                     latest_pos[number] = row
                     finished = True
@@ -473,7 +537,7 @@ class F1Plugin(PluginBase):
         )
         latest_int: Dict[int, Dict[str, Any]] = {}
         for row in intervals:
-            number = row.get("driver_number")
+            number = _as_int(row.get("driver_number"))
             if number is None:
                 continue
             current = latest_int.get(number)
@@ -483,7 +547,7 @@ class F1Plugin(PluginBase):
         stints = self._openf1("stints", {"session_key": key})
         latest_stint: Dict[int, Dict[str, Any]] = {}
         for row in stints:
-            number = row.get("driver_number")
+            number = _as_int(row.get("driver_number"))
             if number is None:
                 continue
             current = latest_stint.get(number)
@@ -492,10 +556,14 @@ class F1Plugin(PluginBase):
 
         entries: List[Dict[str, Any]] = []
         for number, pos_row in latest_pos.items():
-            position = pos_row.get("position")
+            position = _as_int(pos_row.get("position"))
             if position is None:
+                # One unparseable row must not blank the whole board.
+                logger.debug("Skipping row with unusable position: %r", pos_row.get("position"))
                 continue
             driver = roster.get(number, {})
+            if not isinstance(driver, dict):
+                driver = {}
             interval_row = latest_int.get(number, {})
             stint = latest_stint.get(number, {})
 
@@ -512,22 +580,23 @@ class F1Plugin(PluginBase):
                 gap_value = interval_row.get("gap_to_leader")
                 interval_value = interval_row.get("interval")
 
-            compound = (stint.get("compound") or "").upper()
+            compound = _text(stint.get("compound")).upper()
             tyre = TYRE_CHARS.get(compound, "")
             tyre_age = stint.get("tyre_age_at_start")
 
             code = sanitize(driver.get("name_acronym") or f"#{number}", 3)
+            team_name = _text(driver.get("team_name"))
             entry = {
-                "position": str(int(position)),
+                "position": str(position),
                 "code": code,
-                "number": str(number),
+                "number": sanitize(number, 2),
                 "name": sanitize(driver.get("last_name") or driver.get("full_name") or code, 12),
-                "team": sanitize(TEAM_SHORT_LIVE.get(driver.get("team_name", ""), driver.get("team_name", "")), 9),
-                "gap": _format_gap(gap_value, leader=int(position) == 1),
-                "interval": _format_gap(interval_value, leader=int(position) == 1),
+                "team": sanitize(TEAM_SHORT_LIVE.get(team_name, team_name), 9),
+                "gap": _format_gap(gap_value, leader=position == 1),
+                "interval": _format_gap(interval_value, leader=position == 1),
                 "tyre": tyre,
-                "tyre_age": "" if tyre_age is None else str(tyre_age),
-                "_position": int(position),
+                "tyre_age": sanitize("" if tyre_age is None else tyre_age, 2),
+                "_position": position,
             }
             entry["line"] = pad_row(
                 f"{entry['position']} {entry['code']}", entry["gap"] or entry["interval"], 22
@@ -551,7 +620,7 @@ class F1Plugin(PluginBase):
         """Return (current lap, total laps) as strings; either may be blank."""
         total = ""
         if session.get("session_name") == "Race":
-            laps = RACE_LAPS.get(session.get("circuit_short_name", ""))
+            laps = RACE_LAPS.get(_text(session.get("circuit_short_name")))
             if laps:
                 total = str(laps)
 
@@ -570,7 +639,8 @@ class F1Plugin(PluginBase):
             rows = self._openf1(
                 "laps", {"session_key": session.get("session_key"), "driver_number": leader_number}
             )
-            numbers = [r.get("lap_number") for r in rows if r.get("lap_number") is not None]
+            # max() over mixed str/int would raise; coerce and drop the rest.
+            numbers = [n for n in (_as_int(r.get("lap_number")) for r in rows) if n is not None]
             return str(max(numbers)) if numbers else ""
 
         try:
@@ -639,27 +709,29 @@ class F1Plugin(PluginBase):
             logger.warning("Standings fetch failed for %s %s: %s", year, resource, exc)
             return []
 
-        lists = mrdata.get("StandingsTable", {}).get("StandingsLists", [])
-        if not lists:
+        table = mrdata.get("StandingsTable")
+        lists = table.get("StandingsLists") if isinstance(table, dict) else None
+        if not isinstance(lists, list) or not lists or not isinstance(lists[0], dict):
             return []
         block = lists[0]
         rows: List[Dict[str, Any]] = []
 
         if resource == "driverstandings":
             leader_points = None
-            for row in block.get("DriverStandings", []):
-                driver = row.get("Driver", {})
-                teams = row.get("Constructors", [])
+            for row in _dict_rows(block.get("DriverStandings")):
+                driver = row.get("Driver")
+                driver = driver if isinstance(driver, dict) else {}
+                teams = [t for t in _dict_rows(row.get("Constructors"))]
                 points = _to_number(row.get("points"))
                 if leader_points is None:
                     leader_points = points
-                team_id = teams[0].get("constructorId") if teams else ""
-                team_name = teams[0].get("name", "") if teams else ""
+                team_id = _text(teams[0].get("constructorId")) if teams else ""
+                team_name = _text(teams[0].get("name")) if teams else ""
                 entry = {
                     "position": sanitize(row.get("position"), 2),
                     "code": sanitize(driver.get("code") or driver.get("familyName"), 3),
                     "name": sanitize(driver.get("familyName"), 12),
-                    "team": sanitize(TEAM_SHORT.get(team_id, team_name), 9),
+                    "team": sanitize(TEAM_SHORT.get(_text(team_id), _text(team_name)), 9),
                     "points": _format_points(points),
                     "wins": sanitize(row.get("wins"), 2),
                     "gap": _format_points(leader_points - points) if leader_points is not None else "",
@@ -671,17 +743,18 @@ class F1Plugin(PluginBase):
                 rows.append(entry)
         else:
             leader_points = None
-            for row in block.get("ConstructorStandings", []):
-                team = row.get("Constructor", {})
+            for row in _dict_rows(block.get("ConstructorStandings")):
+                team = row.get("Constructor")
+                team = team if isinstance(team, dict) else {}
                 points = _to_number(row.get("points"))
                 if leader_points is None:
                     leader_points = points
-                constructor_id = team.get("constructorId", "")
+                constructor_id = _text(team.get("constructorId"))
                 entry = {
                     "position": sanitize(row.get("position"), 2),
                     "name": sanitize(team.get("name"), 14),
-                    "short": sanitize(TEAM_SHORT.get(constructor_id, team.get("name", "")), 9),
-                    "code": sanitize(TEAM_CODE.get(constructor_id, team.get("name", "")[:3]), 3),
+                    "short": sanitize(TEAM_SHORT.get(constructor_id, _text(team.get("name"))), 9),
+                    "code": sanitize(TEAM_CODE.get(constructor_id, _text(team.get("name"))[:3]), 3),
                     "points": _format_points(points),
                     "wins": sanitize(row.get("wins"), 2),
                     "gap": _format_points(leader_points - points) if leader_points is not None else "",
@@ -784,11 +857,11 @@ class F1Plugin(PluginBase):
             "season": str(standings.get("season", now.year)),
             "round": sanitize(wdc.get("round", ""), 5),
             "session_name": sanitize(session_name, 16),
-            "session_short": SESSION_SHORT.get(session_name, sanitize(session_name, 6)),
+            "session_short": SESSION_SHORT.get(_text(session_name), sanitize(session_name, 6)),
             "session_type": sanitize(live_session.get("session_type", "") if live_session else "", 10),
             "circuit": sanitize(circuit, 18),
             "country": sanitize(country, 3),
-            "gp_name": sanitize(f"{country} GP" if country else "", 22),
+            "gp_name": sanitize(f"{country} GP", 22) if country else "",
             "flag": sanitize(live_data.get("flag", ""), 13),
             "track_status": sanitize(live_data.get("flag", ""), 13),
             "lap": lap_display,
@@ -803,7 +876,7 @@ class F1Plugin(PluginBase):
             "gap_p2": entries[1]["gap"] if len(entries) > 1 else "",
             "gap_p3": entries[2]["gap"] if len(entries) > 2 else "",
             "next_gp": sanitize(
-                f"{countdown_target.get('country_code', '')} GP" if countdown_target else "", 22
+                f"{_text(countdown_target.get('country_code'))} GP" if countdown_target else "", 22
             ),
             "next_circuit": sanitize(
                 countdown_target.get("circuit_short_name", "") if countdown_target else "", 18
@@ -812,15 +885,17 @@ class F1Plugin(PluginBase):
                 countdown_target.get("country_code", "") if countdown_target else "", 3
             ),
             "next_session": SESSION_SHORT.get(
-                countdown_target.get("session_name", "") if countdown_target else "",
-                sanitize(countdown_target.get("session_name", "") if countdown_target else "", 6),
+                _text(countdown_target.get("session_name")) if countdown_target else "",
+                sanitize(countdown_target.get("session_name") if countdown_target else "", 6),
             ),
             # A numeric month keeps the weekday and still fits a Note in one
             # format, so both board sizes render the same thing.
             "next_local_date": _local(countdown_target, tz, "%a %d/%m") if countdown_target else "",
             # The colon matters: without it "0030" reads as a year, not a time.
             "next_local_time": _local(countdown_target, tz, "%H:%M") if countdown_target else "",
-            "countdown": _format_countdown(days, hours, minutes),
+            "countdown": _format_countdown(
+                days, hours, minutes, int(self.config.get("countdown_step_minutes", 15) or 1)
+            ),
             "countdown_days": days,
             "countdown_hours": hours,
             "countdown_minutes": minutes,
@@ -910,7 +985,9 @@ class F1Plugin(PluginBase):
         if width <= 15:
             lines = [
                 fit(f"NEXT {circuit}", width),
-                fit(f"{session} IN {countdown}".strip(), width),
+                # Right-aligned rather than "SQUALI IN 12D 23H", which is 17
+                # tiles. Line 1 already establishes that this is the countdown.
+                pad_row(session, countdown, width),
                 fit(when, width),
             ]
         else:
@@ -935,7 +1012,7 @@ class F1Plugin(PluginBase):
     ) -> List[str]:
         lines: List[str] = []
         if width > 15:
-            lines.append(pad_row(f"{title} STANDINGS", rows_data[0].get("round", "") if rows_data else "", width))
+            lines.append(pad_row(f"{title} STANDINGS", _text(rows_data[0].get("round")) if rows_data else "", width))
 
         available = rows - len(lines)
         for entry in rows_data[:available]:
@@ -977,11 +1054,46 @@ def _parse_iso(value: Any) -> Optional[datetime]:
     return parsed.astimezone(timezone.utc)
 
 
+def _text(value: Any) -> str:
+    """A scalar coerced to str, and anything else to "".
+
+    Upstream fields are used as dict lookup keys and have string methods called
+    on them. A field that arrives as a dict or list would otherwise raise
+    "unhashable type" or AttributeError and take the whole board offline.
+    """
+    if value is None or isinstance(value, (dict, list, tuple, set)):
+        return ""
+    return str(value)
+
+
+def _dict_rows(value: Any) -> List[Dict[str, Any]]:
+    """Only the dict rows from something an API claimed was a list of them."""
+    if not isinstance(value, list):
+        return []
+    return [row for row in value[:MAX_ROWS] if isinstance(row, dict)]
+
+
+def _as_int(value: Any) -> Optional[int]:
+    """int() that returns None instead of raising on anything unusable.
+
+    Upstream rows are untrusted: a position of "P1", None, a dict or a NaN
+    would otherwise propagate an exception up to fetch_data and take the whole
+    display offline rather than dropping one row.
+    """
+    try:
+        number = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return number if -1000 < number < 1000 else None
+
+
 def _to_number(value: Any) -> float:
     try:
-        return float(value)
-    except (TypeError, ValueError):
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
         return 0.0
+    # NaN and infinities format as "nan"/"inf" and would reach the board.
+    return number if -1e9 < number < 1e9 else 0.0
 
 
 def _format_points(value: Any) -> str:
@@ -998,8 +1110,10 @@ def _format_gap(value: Any, leader: bool = False) -> str:
         return "LEADER" if leader else ""
     try:
         number = float(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return sanitize(value, 7)
+    if number != number or abs(number) == float("inf"):  # NaN / infinity
+        return ""
     if number == 0:
         return "LEADER" if leader else "+0.0"
     if number >= 60:
@@ -1016,14 +1130,27 @@ def _split_delta(delta: Optional[timedelta]) -> Tuple[str, str, str]:
     return str(days), str(hours), str(minutes)
 
 
-def _format_countdown(days: str, hours: str, minutes: str) -> str:
+def _format_countdown(days: str, hours: str, minutes: str, step: int = 15) -> str:
+    """Coarsest useful granularity, floored.
+
+    A split-flap board makes noise every time it changes, so this is tuned to
+    change as rarely as it can while staying useful: hourly above an hour, and
+    in ``step``-minute buckets below one. The exact start time sits on the row
+    underneath, so precision here buys very little.
+    """
     if not any((days, hours, minutes)):
         return ""
     if days and days != "0":
         return f"{days}D {hours}H"
+
+    remaining = int(minutes or 0)
+    if step > 1:
+        remaining = (remaining // step) * step
+
     if hours and hours != "0":
-        return f"{hours}H {minutes}M"
-    return f"{minutes}M"
+        # Zero-padded so the width never changes: fewer tiles move per update.
+        return f"{hours}H {remaining:02d}M"
+    return f"{remaining}M" if remaining > 0 else "SOON"
 
 
 def _local(session: Optional[Dict[str, Any]], tz, fmt: str) -> str:

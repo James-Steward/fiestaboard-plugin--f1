@@ -10,7 +10,7 @@ APIs. **No API key, no account, no paid tier.**
 ```
 +---------------+   +---------------+   +---------------+
 |NED RACE L34/72|   |NEXT ZANDVOORT |   |1 ANT       219|
-|1ANT 2HAM 3NOR |   |RACE IN 1D 5H  |   |2 HAM       169|
+|1ANT 2HAM 3NOR |   |RACE    13H 45M|   |2 HAM       169|
 |GAP +1.2 +2M   |   |SUN 23/08 23:00|   |3 RUS     160.5|
 +---------------+   +---------------+   +---------------+
      live               countdown           standings
@@ -113,6 +113,25 @@ when a live timing row would otherwise overflow.
 If you'd rather design your own page, ignore the pre-built lines entirely and
 compose from the individual variables; they are all pre-truncated to the
 `max_lengths` declared in `manifest.json`.
+
+## Treating upstream data as untrusted
+
+Both APIs are unauthenticated and community-run, so every response field is
+handled as untrusted input regardless of its documented type. `_text()`
+coerces scalars and rejects containers before a value is used as a dictionary
+key or has string methods called on it; `_as_int()` returns `None` instead of
+raising. A single unusable row is dropped rather than taking the whole display
+offline.
+
+Responses are streamed and abandoned past `MAX_RESPONSE_BYTES`, row counts are
+capped at `MAX_ROWS`, and the cache is bounded by `MAX_CACHE_ENTRIES` — its
+keys include session ids, so it would otherwise grow all season.
+
+Because `{` and `}` are not board characters, `sanitize()` strips them, and
+upstream data cannot inject colour tiles. Colour codes survive only in rows
+this plugin composes itself.
+
+See [SECURITY.md](SECURITY.md) for the full threat model.
 
 ## A note on the manifest format
 
