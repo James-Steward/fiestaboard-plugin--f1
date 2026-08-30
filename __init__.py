@@ -511,10 +511,14 @@ class F1Plugin(PluginBase):
             },
         )
 
-        since = (now - timedelta(minutes=20)).strftime("%Y-%m-%dT%H:%M:%S")
-        positions = self._openf1("position", {"session_key": key, "date>": since})
+        # /position is a change log, not a continuous feed: it only records a
+        # row when a driver's position actually changes. Settled phases of a
+        # race leave 15-20 minute gaps, so a rolling window returns nothing
+        # and the board falls out of live mode mid-race. Ask for the whole
+        # session and keep the most recent row per driver instead — it is only
+        # a few hundred rows even for a full grand prix.
         latest_pos: Dict[int, Dict[str, Any]] = {}
-        for row in positions:
+        for row in self._openf1("position", {"session_key": key}):
             number = _as_int(row.get("driver_number"))
             if number is None:
                 continue
@@ -522,14 +526,19 @@ class F1Plugin(PluginBase):
             if current is None or str(row.get("date")) >= str(current.get("date")):
                 latest_pos[number] = row
 
+        # Once the session is over, the classification is better than the last
+        # position sample: it carries final gaps and DNF/DNS/DSQ.
         finished = False
-        if not latest_pos:
-            # Session over (or not started): fall back to the classification.
+        ended = session.get("_end") is not None and now > session["_end"]
+        if ended or not latest_pos:
+            results: Dict[int, Dict[str, Any]] = {}
             for row in self._openf1("session_result", {"session_key": key}):
                 number = _as_int(row.get("driver_number"))
                 if number is not None and row.get("position") is not None:
-                    latest_pos[number] = row
-                    finished = True
+                    results[number] = row
+            if results:
+                latest_pos = results
+                finished = True
 
         intervals = self._openf1(
             "intervals",
@@ -774,23 +783,42 @@ class F1Plugin(PluginBase):
             now = datetime.now(timezone.utc)
             tz = self._tz()
 
-            live_session, next_session, next_race = self._find_sessions(now)
+            # Each stage is independent and must not be able to take the others
+            # down. Catching only RequestException here was a real bug: a
+            # truncated or non-JSON body from an overloaded upstream raises
+            # ValueError, which escaped and blanked every variable — including
+            # the countdown, which needs no live data at all.
+            live_session = next_session = next_race = None
+            calendar_ok = True
+            try:
+                live_session, next_session, next_race = self._find_sessions(now)
+            except Exception as exc:  # noqa: BLE001
+                calendar_ok = False
+                logger.warning("F1 calendar unavailable: %s", exc)
 
             live_data: Dict[str, Any] = {"entries": [], "finished": False, "lap": ("", ""), "flag": ""}
             if live_session is not None:
                 try:
                     live_data = self._live_snapshot(live_session, now)
-                except requests.RequestException as exc:
-                    logger.warning("Live timing unavailable: %s", exc)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("Live timing unavailable, falling back: %s", exc)
 
             try:
                 standings = self._standings(now)
-            except requests.RequestException as exc:
+            except Exception as exc:  # noqa: BLE001
                 logger.warning("Standings unavailable: %s", exc)
                 standings = {"season": now.year, "drivers": [], "constructors": []}
 
+            # Only give up when there is genuinely nothing to show.
+            if not calendar_ok and not standings.get("drivers") and not standings.get("constructors"):
+                return PluginResult(available=False, error="F1 data sources unavailable")
+
             data = self._assemble(now, tz, live_session, next_session, next_race, live_data, standings)
-            mode = self._resolve_mode(bool(live_session and live_data["entries"]))
+            mode = self._resolve_mode(
+                has_live=bool(live_session and live_data["entries"]),
+                session_running=bool(live_session and live_session["_start"] <= now),
+                standings=bool(standings.get("drivers")),
+            )
             # Exposed to templates, so it has to be board-printable too.
             data["mode"] = mode.upper()
 
@@ -913,13 +941,19 @@ class F1Plugin(PluginBase):
             "updated": datetime.now(tz).strftime("%H:%M"),
         }
 
-    def _resolve_mode(self, has_live: bool) -> str:
+    def _resolve_mode(self, has_live: bool, session_running: bool = False, standings: bool = False) -> str:
         mode = self.config.get("display_mode", "auto")
         if mode != "auto":
             return mode
         if has_live:
             return "live"
-        return self.config.get("fallback_mode", "countdown")
+
+        fallback = self.config.get("fallback_mode", "countdown")
+        # Mid-session with no timing data, counting down to a session a
+        # fortnight away is worse than useless. Show the championship instead.
+        if session_running and fallback == "countdown" and standings:
+            return "drivers"
+        return fallback
 
     # ------------------------------------------------------------------
     # Pre-built board lines

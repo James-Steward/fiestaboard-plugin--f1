@@ -734,6 +734,230 @@ class TestUntrustedUpstream:
 
 
 # ----------------------------------------------------------------------
+# Graceful degradation
+#
+# Regression cover for the race-weekend outage: the board showed "???" on
+# every row and froze, because a non-network error during live timing
+# escaped and made the whole plugin unavailable — wiping even the countdown,
+# which needs no live data at all.
+# ----------------------------------------------------------------------
+
+
+def broken_body(payload):
+    """A response that returns HTTP 200 but a body json can't parse."""
+
+    class Body:
+        headers = {}
+        status_code = 200
+
+        def raise_for_status(self):
+            pass
+
+        def iter_content(self, size):
+            yield payload
+
+        def json(self):
+            return json.loads(payload)
+
+        def close(self):
+            pass
+
+    return Body()
+
+
+class TestGracefulDegradation:
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            b"<html><body>502 Bad Gateway</body></html>",  # CDN error page with a 200
+            b'[{"driver_number": 12, "positi',                # truncated mid-object
+            b"",                                              # empty body
+            b"\x00\x01\x02",                                  # binary garbage
+        ],
+    )
+    def test_malformed_live_response_falls_back_instead_of_blanking(self, payload):
+        """This is the exact failure: it must degrade, never go unavailable."""
+
+        def router(url, params=None, timeout=None, **kwargs):
+            if "/sessions" in url:
+                return create_mock_response(build_sessions(-60))
+            if "driverstandings" in url:
+                return create_mock_response(DRIVER_STANDINGS)
+            if "constructorstandings" in url:
+                return create_mock_response(CONSTRUCTOR_STANDINGS)
+            if any(part in url for part in ("/position", "/intervals", "/drivers", "/stints", "/laps")):
+                return broken_body(payload)
+            return create_mock_response([])
+
+        plugin = make_plugin({"board": "note", "display_mode": "auto"})
+        with patch.object(f1.requests, "get", side_effect=router):
+            result = plugin.fetch_data()
+
+        assert result.available is True, f"went unavailable on {payload[:20]!r}"
+        assert result.formatted_lines, "no lines rendered"
+        # The countdown needs no live data, so it must still be there.
+        assert any(line.strip() for line in result.formatted_lines)
+        assert result.data["wdc_leader"] == "ANT", "standings should survive too"
+
+    def test_oversized_live_response_falls_back(self):
+        chunk = b"x" * (1024 * 1024)
+
+        class Huge:
+            headers = {}
+            status_code = 200
+
+            def raise_for_status(self):
+                pass
+
+            def iter_content(self, size):
+                while True:
+                    yield chunk
+
+            def close(self):
+                pass
+
+        def router(url, params=None, timeout=None, **kwargs):
+            if "/sessions" in url:
+                return create_mock_response(build_sessions(-60))
+            if "standings" in url:
+                return create_mock_response(DRIVER_STANDINGS)
+            if "/position" in url:
+                return Huge()
+            return create_mock_response([])
+
+        plugin = make_plugin({"display_mode": "auto"})
+        with patch.object(f1.requests, "get", side_effect=router):
+            result = plugin.fetch_data()
+        assert result.available is True
+
+    def test_standings_survive_when_calendar_dies(self):
+        def router(url, params=None, timeout=None, **kwargs):
+            if "/sessions" in url:
+                return broken_body(b"not json")
+            if "driverstandings" in url:
+                return create_mock_response(DRIVER_STANDINGS)
+            if "constructorstandings" in url:
+                return create_mock_response(CONSTRUCTOR_STANDINGS)
+            return create_mock_response([])
+
+        plugin = make_plugin({"display_mode": "drivers"})
+        with patch.object(f1.requests, "get", side_effect=router):
+            result = plugin.fetch_data()
+
+        assert result.available is True, result.error
+        assert result.data["wdc_leader"] == "ANT"
+        assert any("ANT" in line for line in result.formatted_lines)
+
+    def test_unavailable_only_when_everything_is_gone(self):
+        def router(url, params=None, timeout=None, **kwargs):
+            return broken_body(b"not json")
+
+        plugin = make_plugin()
+        with patch.object(f1.requests, "get", side_effect=router):
+            result = plugin.fetch_data()
+
+        assert result.available is False
+        assert "unavailable" in result.error
+
+    def test_mid_session_failure_shows_standings_not_a_distant_countdown(self):
+        """Counting down to a session a fortnight away mid-race is misleading."""
+
+        def router(url, params=None, timeout=None, **kwargs):
+            if "/sessions" in url:
+                return create_mock_response(build_sessions(-60))
+            if "driverstandings" in url:
+                return create_mock_response(DRIVER_STANDINGS)
+            if "constructorstandings" in url:
+                return create_mock_response(CONSTRUCTOR_STANDINGS)
+            if "/position" in url:
+                return broken_body(b"nope")
+            return create_mock_response([])
+
+        plugin = make_plugin({"display_mode": "auto", "fallback_mode": "countdown"})
+        with patch.object(f1.requests, "get", side_effect=router):
+            result = plugin.fetch_data()
+
+        assert result.data["mode"] == "DRIVERS", result.data["mode"]
+        assert any("ANT" in line for line in result.formatted_lines)
+
+    def test_between_sessions_still_uses_the_configured_fallback(self):
+        """The override applies only while a session is actually running."""
+        plugin = make_plugin({"display_mode": "auto", "fallback_mode": "countdown"})
+        with patch.object(f1.requests, "get", side_effect=make_router(60 * 30)):
+            result = plugin.fetch_data()
+        assert result.data["mode"] == "COUNTDOWN"
+
+    def test_stale_position_rows_still_produce_live_timing(self):
+        """/position is a change log, not a feed.
+
+        Real races leave 15-20 minute gaps with no rows at all, and a driver
+        who took the lead on the grid may have no row for an hour. A rolling
+        window dropped the board out of live mode mid-race, and sometimes
+        lost the leader entirely.
+        """
+        old = iso(NOW - timedelta(minutes=55))
+        older = iso(NOW - timedelta(minutes=90))
+        positions = [
+            {"driver_number": 12, "position": 1, "date": older},   # led from the grid
+            {"driver_number": 44, "position": 2, "date": old},
+            {"driver_number": 1, "position": 3, "date": old},
+        ]
+
+        def router(url, params=None, timeout=None, **kwargs):
+            if "/position" in url:
+                # No date filter may be sent, or the fixture is pointless.
+                assert not any(k.startswith("date") for k in (params or {})), \
+                    "position must not be windowed"
+                return create_mock_response(positions)
+            return make_router(-60)(url, params, timeout)
+
+        plugin = make_plugin({"board": "note", "display_mode": "auto"})
+        with patch.object(f1.requests, "get", side_effect=router):
+            result = plugin.fetch_data()
+
+        assert result.data["mode"] == "LIVE", result.data["mode"]
+        assert result.data["leader"] == "ANT", "leader lost to the window"
+        assert [e["code"] for e in result.data["live"]] == ["ANT", "HAM", "NOR"]
+
+    def test_finished_session_prefers_the_classification(self):
+        """After the flag, session_result carries final gaps and DNFs."""
+        sessions = build_sessions(-180)  # started 3h ago, ended 1h ago
+
+        def router(url, params=None, timeout=None, **kwargs):
+            if "/sessions" in url:
+                return create_mock_response(sessions)
+            return make_router(-180)(url, params, timeout)
+
+        plugin = make_plugin({"display_mode": "live", "live_window_minutes": 120})
+        with patch.object(f1.requests, "get", side_effect=router):
+            result = plugin.fetch_data()
+
+        assert result.available is True
+        assert any(e["gap"] == "DNF" for e in result.data["live"]), result.data["live"]
+
+    def test_live_failure_does_not_poison_the_cache(self):
+        """A failed live fetch must not be cached as a good empty result."""
+        calls = {"n": 0}
+
+        def router(url, params=None, timeout=None, **kwargs):
+            if "/sessions" in url:
+                return create_mock_response(build_sessions(-60))
+            if "standings" in url:
+                return create_mock_response(DRIVER_STANDINGS)
+            if "/position" in url:
+                calls["n"] += 1
+                return broken_body(b"nope")
+            return create_mock_response([])
+
+        plugin = make_plugin({"display_mode": "auto"})
+        with patch.object(f1.requests, "get", side_effect=router):
+            plugin.fetch_data()
+            plugin.fetch_data()
+
+        assert calls["n"] >= 2, "a failed fetch was cached and never retried"
+
+
+# ----------------------------------------------------------------------
 # Session time formatting
 # ----------------------------------------------------------------------
 
@@ -1186,11 +1410,14 @@ class TestFailureHandling:
         assert result.data["flag"] == ""
 
     def test_unexpected_error_is_captured(self):
+        """Non-network errors are contained, and reported without a traceback."""
         plugin = make_plugin()
         with patch.object(f1.requests, "get", side_effect=ValueError("kaboom")):
             result = plugin.fetch_data()
         assert result.available is False
-        assert "kaboom" in result.error
+        assert "unavailable" in result.error
+        # the raw exception text belongs in the log, not on someone's board
+        assert "kaboom" not in result.error
 
     def test_empty_api_responses_do_not_crash(self):
         plugin = make_plugin()

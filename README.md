@@ -29,6 +29,14 @@ Neither service requires registration. Both are community-run, so the plugin
 treats every call as best-effort: if standings are unreachable the live board
 still renders, and vice versa.
 
+Each stage is isolated by a broad `except Exception`, not just
+`requests.RequestException`. That distinction matters: an overloaded upstream
+returning a truncated body or a CDN error page with a 200 status raises
+`ValueError`, not a network error. Catching only network errors let that
+escape and marked the whole plugin unavailable, blanking even the countdown —
+which needs no live data at all. The plugin now reports `available=False` only
+when the calendar *and* the standings are both gone.
+
 ## How it works
 
 `fetch_data()` runs three loosely-coupled stages, each with its own cache TTL,
@@ -47,7 +55,7 @@ and merges the results:
    | Endpoint | Purpose |
    | -------- | ------- |
    | `/v1/drivers` | Number → acronym/name/team, cached 1 hour per session |
-   | `/v1/position` | Latest classification, filtered to the last 20 minutes |
+   | `/v1/position` | Latest classification — whole session, latest row per driver |
    | `/v1/intervals` | `gap_to_leader` and `interval`, last 5 minutes |
    | `/v1/stints` | Current tyre compound and age (highest `stint_number` wins) |
    | `/v1/laps` | Leader's lap count → current lap number |
@@ -55,8 +63,16 @@ and merges the results:
    | `/v1/session_result` | Fallback classification once the session ends |
 
    Only the most recent row per driver is kept from `position` and `intervals`.
-   When `position` returns nothing — the session finished, or hasn't started —
-   the plugin falls back to `session_result`, which also surfaces DNF/DNS/DSQ.
+   Once the session has ended the plugin switches to `session_result`, which
+   carries final gaps and DNF/DNS/DSQ.
+
+   **`/position` is a change log, not a feed.** It emits a row only when a
+   driver's position actually changes, so a settled race leaves 15–20 minute
+   gaps, and a driver who led from the grid may have no row for an hour.
+   Querying it with a rolling time window therefore returns nothing during
+   calm phases — dropping the board out of live mode mid-race — and can miss
+   the leader entirely. The whole session is fetched instead; even a full
+   grand prix is only a few hundred rows.
 
 3. **Standings** — `GET /ergast/f1/{year}/driverstandings/` and
    `constructorstandings/`, cached at `standings_refresh_seconds` (30 min by
@@ -156,6 +172,21 @@ The test suite enforces the parts a validator won't catch: previews fit their
 board's tile count, the teaser fits a Note, demo templates only reference
 variables that exist, every variable declares a real group, and each example
 respects its own `max_length`.
+
+## Replaying a past session
+
+Live timing can normally only be exercised while cars are on track.
+`tools/replay.py` downloads a finished session and steps a simulated clock
+through it, printing what the board would have shown:
+
+```bash
+python3 tools/replay.py                    # last completed race
+python3 tools/replay.py --list 2026        # find session keys
+python3 tools/replay.py --session 11353 --step 5 --board flagship
+```
+
+Rows are marked when the board content changes, so it doubles as a check on
+how often the display would physically flap.
 
 ## Development
 

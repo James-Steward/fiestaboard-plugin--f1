@@ -247,6 +247,16 @@ With **Display Mode = auto** you don't strictly need this — the same page turn
 into a countdown on its own — but scheduling avoids giving F1 a permanent slot
 in your rotation.
 
+## Testing without a race
+
+`tools/replay.py` replays a finished session through the plugin so you can see
+what the board would have shown, without waiting for a session:
+
+```bash
+python3 tools/replay.py --list 2026     # find a session_key
+python3 tools/replay.py --session 11353 # replay it
+```
+
 ## Troubleshooting
 
 **Board shows the countdown during a session.** The plugin only treats a

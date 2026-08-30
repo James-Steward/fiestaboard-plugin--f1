@@ -1,7 +1,7 @@
 {
   "id": "f1",
   "name": "Formula 1",
-  "version": "1.6.0",
+  "version": "1.7.0",
   "description": "Live F1 timing, next race countdown, and driver/constructor championship standings. No API key required.",
   "author": "James Steward",
   "repository": "https://github.com/James-Steward/fiestaboard-plugin--f1",
@@ -43,7 +43,7 @@
       "fallback_mode": {
         "type": "string",
         "title": "Fallback Mode (auto only)",
-        "description": "What 'auto' shows when no session is live.",
+        "description": "What 'auto' shows when no session is live. If a session is running but timing data is unavailable, the standings are shown instead of a countdown to a distant session.",
         "enum": [
           "countdown",
           "drivers",
