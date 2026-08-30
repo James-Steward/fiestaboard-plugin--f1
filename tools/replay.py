@@ -11,7 +11,8 @@ minute by minute, without waiting for a race weekend.
     python3 tools/replay.py --list 2026         # find session keys
     python3 tools/replay.py --session 11353 --step 5 --board flagship
 
-Only needs `requests`. Run it from the plugin directory.
+Standard library only — no pip install, runs on a stock macOS or Pi Python.
+Run it from the plugin directory.
 """
 
 from __future__ import annotations
@@ -19,17 +20,86 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import ssl
 import sys
 import types
+import urllib.error
+import urllib.parse
+import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-import requests
-
 PLUGIN_DIR = Path(__file__).resolve().parent.parent
 OPENF1 = "https://api.openf1.org/v1"
+
+
+def ensure_requests() -> None:
+    """The plugin imports `requests`; provide a stdlib stand-in if it's absent.
+
+    Only the pieces the plugin actually touches are needed, and `get` is
+    monkey-patched by the replay anyway — this exists so `import requests`
+    at the top of the plugin doesn't fail on a stock system Python.
+    """
+    try:
+        import requests  # noqa: F401
+        return
+    except ImportError:
+        pass
+
+    module = types.ModuleType("requests")
+
+    class RequestException(Exception):
+        pass
+
+    class HTTPError(RequestException):
+        pass
+
+    class _Response:
+        def __init__(self, body: bytes, status: int, headers: Dict[str, str]):
+            self._body, self.status_code, self.headers = body, status, headers
+
+        def raise_for_status(self):
+            if self.status_code >= 400:
+                raise HTTPError(f"HTTP {self.status_code}")
+
+        def json(self):
+            return json.loads(self._body or b"null")
+
+        def iter_content(self, chunk_size=65536):
+            for index in range(0, len(self._body), chunk_size):
+                yield self._body[index:index + chunk_size]
+
+        def close(self):
+            return None
+
+    def get(url, params=None, timeout=30, **kwargs):
+        if params:
+            url = f"{url}?{urllib.parse.urlencode(params)}"
+        try:
+            with urllib.request.urlopen(url, timeout=timeout) as response:
+                return _Response(response.read(), response.status, dict(response.headers))
+        except urllib.error.HTTPError as exc:
+            return _Response(exc.read(), exc.code, dict(exc.headers or {}))
+        except ssl.SSLCertVerificationError as exc:
+            raise SystemExit(
+                "SSL certificate verification failed.\n"
+                "On macOS this usually means Python's certificates aren't installed. Run:\n"
+                '  /Applications/Python\\ 3.*/Install\\ Certificates.command\n'
+                f"({exc})"
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise RequestException(str(exc)) from exc
+
+    module.get = get
+    module.RequestException = RequestException
+    module.HTTPError = HTTPError
+    sys.modules["requests"] = module
+
+
+ensure_requests()
+import requests  # noqa: E402  (real module, or the stub installed above)
 
 
 # --------------------------------------------------------------------------

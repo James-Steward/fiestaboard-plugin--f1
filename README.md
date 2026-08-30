@@ -188,6 +188,10 @@ python3 tools/replay.py --session 11353 --step 5 --board flagship
 Rows are marked when the board content changes, so it doubles as a check on
 how often the display would physically flap.
 
+Standard library only — it runs on a stock macOS or Raspberry Pi Python with
+nothing installed. If `requests` is missing it installs a small urllib-backed
+stand-in so the plugin's own `import requests` still resolves.
+
 ## Development
 
 ```bash

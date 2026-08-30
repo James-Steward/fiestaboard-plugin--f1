@@ -1,7 +1,7 @@
 {
   "id": "f1",
   "name": "Formula 1",
-  "version": "1.7.0",
+  "version": "1.7.1",
   "description": "Live F1 timing, next race countdown, and driver/constructor championship standings. No API key required.",
   "author": "James Steward",
   "repository": "https://github.com/James-Steward/fiestaboard-plugin--f1",

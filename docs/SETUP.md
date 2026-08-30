@@ -257,6 +257,9 @@ python3 tools/replay.py --list 2026     # find a session_key
 python3 tools/replay.py --session 11353 # replay it
 ```
 
+No `pip install` needed — it uses only the standard library, so a stock macOS
+or Pi Python is enough.
+
 ## Troubleshooting
 
 **Board shows the countdown during a session.** The plugin only treats a
