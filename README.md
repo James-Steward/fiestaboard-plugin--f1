@@ -59,7 +59,7 @@ and merges the results:
    | `/v1/intervals` | `gap_to_leader` and `interval`, last 5 minutes |
    | `/v1/stints` | Current tyre compound and age (highest `stint_number` wins) |
    | `/v1/laps` | Leader's lap count → current lap number |
-   | `/v1/race_control` | Track-wide flag and safety car state, cached 30s |
+   | `/v1/race_control` | Race state — one unfiltered call, cached 30s |
    | `/v1/session_result` | Fallback classification once the session ends |
 
    Only the most recent row per driver is kept from `position` and `intervals`.
@@ -79,6 +79,22 @@ and merges the results:
    default). Before the first race of a season both come back empty, so the
    plugin automatically falls back to the previous year's final standings
    rather than showing a blank board.
+
+### Race state
+
+`_derive_race_state()` replays race control chronologically. Three categories
+each hold part of the picture: `SafetyCar` has `VSC DEPLOYED` (note *VSC* —
+matching "VIRTUAL SAFETY CAR" finds nothing and reports a VSC as a full
+safety car), `Flag` has the chequered flag, and `Other` is the *only* place
+`RED FLAG - RACE SUSPENDED` appears. One unfiltered request gets all three.
+
+Latest event wins, with one exception: a safety car doesn't downgrade a red
+flag, because the lights come on shortly before a restart while the race is
+still formally suspended.
+
+`RED_FLAG` is word-anchored on purpose — `"CHEQUERED FLAG"` contains
+`"RED FLAG"` as a substring, and a plain `in` test ends every race under a
+red flag.
 
 ### Total lap counts
 

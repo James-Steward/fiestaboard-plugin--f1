@@ -270,7 +270,8 @@ class TestF1PluginCore(PluginTestCase):
         assert (data["p1"], data["p2"], data["p3"]) == ("ANT", "HAM", "NOR")
         assert data["circuit"] == "ZANDVOORT"
         assert data["lap"] == "L34/72"
-        assert data["flag"] == "YELLOW"
+        # flag is the race state now; a single-sector yellow is not one
+        assert data["flag"] == ""
 
     def test_live_entries_are_ordered_and_deduplicated(self):
         plugin = make_plugin()
@@ -955,6 +956,128 @@ class TestGracefulDegradation:
             plugin.fetch_data()
 
         assert calls["n"] >= 2, "a failed fetch was cached and never retried"
+
+
+# ----------------------------------------------------------------------
+# Race state: safety car, virtual safety car, red flag
+#
+# The timeline below is the real Zandvoort 2026 race control feed. It has a
+# 28-minute red-flag suspension and two VSC periods, and all three of
+# OpenF1's categories are needed to see them.
+# ----------------------------------------------------------------------
+
+ZANDVOORT_CONTROL = [
+    ("12:20:01", "Flag", "GREEN", "Track", "GREEN LIGHT - PIT EXIT OPEN"),
+    ("12:55:02", "Other", None, None, "SAFETY CAR LIGHTS ON"),
+    ("13:01:10", "Other", None, None, "STANDING START"),
+    ("13:03:29", "Other", None, None, "RACE START"),
+    ("13:05:28", "Other", None, None, "RED FLAG - RACE SUSPENDED"),
+    ("13:08:00", "Flag", "CLEAR", "Track", "TRACK CLEAR"),
+    ("13:22:29", "Other", None, None, "RACE WILL RESUME AT 15:33"),
+    ("13:28:11", "Other", None, None, "SAFETY CAR LIGHTS ON"),
+    ("13:33:47", "Other", None, None, "STANDING START"),
+    ("14:44:35", "SafetyCar", None, None, "VSC DEPLOYED"),
+    ("14:48:41", "SafetyCar", None, None, "VSC ENDING"),
+    ("15:04:22", "SafetyCar", None, None, "VSC DEPLOYED"),
+    ("15:05:13", "SafetyCar", None, None, "VSC ENDING"),
+    ("15:08:13", "Flag", "CHEQUERED", "Track", "CHEQUERED FLAG"),
+]
+
+
+def control_rows(until="23:59"):
+    return [
+        {"date": f"2026-08-23T{t}+00:00", "category": c, "flag": f, "scope": s, "message": m}
+        for t, c, f, s, m in ZANDVOORT_CONTROL
+        if t[:5] <= until
+    ]
+
+
+class TestRaceState:
+    @pytest.mark.parametrize(
+        "at,expected",
+        [
+            ("12:50", ""),          # nothing yet
+            ("12:56", "SC"),        # safety car lights on before the start
+            ("13:04", ""),          # race start clears it
+            ("13:06", "RED"),       # suspended
+            ("13:20", "RED"),
+            ("13:30", "RED"),       # SC lights during the suspension must not downgrade
+            ("13:35", ""),          # standing restart
+            ("14:46", "VSC"),
+            ("14:50", ""),          # VSC ending
+            ("15:10", "CHEQUERED"),
+        ],
+    )
+    def test_state_through_a_real_race(self, at, expected):
+        assert f1._derive_race_state(control_rows(at)) == expected
+
+    def test_chequered_flag_is_not_read_as_a_red_flag(self):
+        """"CHEQUERED FLAG" contains "RED FLAG" as a substring."""
+        assert f1._derive_race_state([{"date": "1", "flag": "CHEQUERED",
+                                       "scope": "Track", "message": "CHEQUERED FLAG"}]) == "CHEQUERED"
+        assert not f1.RED_FLAG.search("CHEQUERED FLAG")
+        assert f1.RED_FLAG.search("RED FLAG - RACE SUSPENDED")
+
+    def test_vsc_is_not_reported_as_a_full_safety_car(self):
+        """OpenF1 says "VSC DEPLOYED", not "VIRTUAL SAFETY CAR DEPLOYED"."""
+        assert f1._derive_race_state([{"date": "1", "category": "SafetyCar",
+                                       "message": "VSC DEPLOYED"}]) == "VSC"
+        assert f1._derive_race_state([{"date": "1", "category": "SafetyCar",
+                                       "message": "SAFETY CAR DEPLOYED"}]) == "SC"
+
+    def test_a_safety_car_does_not_downgrade_a_red_flag(self):
+        rows = [{"date": "1", "message": "RED FLAG - RACE SUSPENDED"},
+                {"date": "2", "message": "SAFETY CAR LIGHTS ON"}]
+        assert f1._derive_race_state(rows) == "RED"
+
+    def test_state_replaces_the_lap_counter_on_the_board(self):
+        plugin = make_plugin({"board": "note"})
+        data = {"country": "NED", "session_short": "RACE", "flag": "RED",
+                "lap": "L3/72", "status": "LIVE",
+                "live": [{"position": "1", "code": "NOR", "gap": "", "interval": ""},
+                         {"position": "2", "code": "RUS", "gap": "", "interval": ""},
+                         {"position": "3", "code": "ANT", "gap": "", "interval": ""}]}
+        lines = plugin._live_lines(data, 15, 3)
+        assert lines[0].endswith("RED"), lines[0]
+        assert "L3/72" not in lines[0]
+        assert lines[2] == "SUSPENDED", lines[2]
+        for line in lines:
+            assert tile_count(line) <= 15
+
+    def test_lap_counter_returns_when_racing_resumes(self):
+        plugin = make_plugin({"board": "note"})
+        data = {"country": "NED", "session_short": "RACE", "flag": "",
+                "lap": "L34/72", "status": "LIVE",
+                "live": [{"position": "1", "code": "NOR", "gap": "LEADER", "interval": ""},
+                         {"position": "2", "code": "RUS", "gap": "+1.2", "interval": ""},
+                         {"position": "3", "code": "ANT", "gap": "+3.4", "interval": ""}]}
+        lines = plugin._live_lines(data, 15, 3)
+        assert lines[0].endswith("L34/72")
+        assert lines[2].startswith("GAP")
+
+    def test_no_bare_gap_label_when_there_are_no_gaps(self):
+        plugin = make_plugin({"board": "note"})
+        data = {"country": "NED", "session_short": "RACE", "flag": "", "lap": "L3/72",
+                "live": [{"position": "1", "code": "NOR", "gap": "", "interval": ""}]}
+        assert plugin._live_lines(data, 15, 3)[2] == ""
+
+    def test_race_control_is_fetched_in_one_unfiltered_call(self):
+        """Three categories are needed; one request covers all of them."""
+        calls = []
+
+        def router(url, params=None, timeout=None, **kwargs):
+            if "/race_control" in url:
+                calls.append(params or {})
+                return create_mock_response(control_rows("13:20"))
+            return make_router(-60)(url, params, timeout)
+
+        plugin = make_plugin({"display_mode": "live"})
+        with patch.object(f1.requests, "get", side_effect=router):
+            data = plugin.fetch_data().data
+
+        assert len(calls) == 1, f"expected one race_control call, got {len(calls)}"
+        assert "category" not in calls[0] and "scope" not in calls[0]
+        assert data["flag"] == "RED"
 
 
 # ----------------------------------------------------------------------

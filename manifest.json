@@ -1,7 +1,7 @@
 {
   "id": "f1",
   "name": "Formula 1",
-  "version": "1.7.1",
+  "version": "1.8.0",
   "description": "Live F1 timing, next race countdown, and driver/constructor championship standings. No API key required.",
   "author": "James Steward",
   "repository": "https://github.com/James-Steward/fiestaboard-plugin--f1",
@@ -183,18 +183,18 @@
         "example": "NED GP"
       },
       "flag": {
-        "description": "Current track-wide flag or safety car state",
+        "description": "Race state: RED (suspended), SC, VSC, CHEQUERED, or blank while racing normally",
         "type": "string",
         "max_length": 13,
         "group": "timing",
-        "example": "YELLOW"
+        "example": "VSC"
       },
       "track_status": {
-        "description": "Alias of flag, for readability in templates",
+        "description": "Alias of flag. Note this is the race state, not per-sector yellow flags",
         "type": "string",
         "max_length": 13,
         "group": "timing",
-        "example": "SAFETY CAR"
+        "example": "RED"
       },
       "lap": {
         "description": "Lap counter, with the total where the race distance is known",

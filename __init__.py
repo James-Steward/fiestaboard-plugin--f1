@@ -52,6 +52,9 @@ ALLOWED_CHARS = set(
 COLOR_TOKEN = re.compile(r"\{\d{2}\}")
 COLOR_SPLIT = re.compile(r"(\{\d{2}\})")
 
+# Word-anchored: "CHEQUERED FLAG" must not read as a red flag.
+RED_FLAG = re.compile(r"\bRED FLAG\b")
+
 RED, ORANGE, YELLOW, GREEN, BLUE, VIOLET, WHITE, BLACK = 63, 64, 65, 66, 67, 68, 69, 70
 
 # A Note fits exactly five colour tiles beside a code and a three-digit score.
@@ -663,29 +666,29 @@ class F1Plugin(PluginBase):
         return current, total
 
     def _track_status(self, session: Dict[str, Any], now: datetime) -> str:
+        """The current race state: RED, SC, VSC, CHEQUERED, or "" for racing.
+
+        Three different feeds carry this, and none of them alone is enough:
+
+        * ``category=SafetyCar`` says ``VSC DEPLOYED`` / ``VSC ENDING`` —
+          note *VSC*, not "VIRTUAL SAFETY CAR", which an earlier version of
+          this parser looked for and so reported a VSC as a full safety car.
+        * ``category=Flag`` with ``scope=Track`` carries GREEN and CHEQUERED.
+        * ``category=Other`` carries ``RED FLAG - RACE SUSPENDED``, and
+          nothing else does. A 28-minute suspension is invisible without it.
+
+        One unfiltered request covers all three, which is also one fewer call
+        against a rate-limited API than fetching them separately.
+        """
         key = session.get("session_key")
 
         def load() -> str:
-            status = ""
             try:
-                safety = self._openf1("race_control", {"session_key": key, "category": "SafetyCar"})
-                flags = self._openf1("race_control", {"session_key": key, "scope": "Track"})
-            except requests.RequestException:
+                rows = self._openf1("race_control", {"session_key": key})
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("Race control unavailable: %s", exc)
                 return ""
-
-            latest_flag = flags[-1] if flags else None
-            latest_sc = safety[-1] if safety else None
-
-            if latest_flag:
-                status = sanitize(latest_flag.get("flag") or "", 13)
-            if latest_sc and latest_flag:
-                if str(latest_sc.get("date")) >= str(latest_flag.get("date")):
-                    message = sanitize(latest_sc.get("message") or "")
-                    if "VIRTUAL" in message:
-                        status = "VSC" if "DEPLOYED" in message else status
-                    elif "DEPLOYED" in message:
-                        status = "SAFETY CAR"
-            return status
+            return _derive_race_state(rows)
 
         return self._cached(f"flag:{key}", 30, load)
 
@@ -989,14 +992,23 @@ class F1Plugin(PluginBase):
         entries = data.get("live", [])
         header_bits = [data.get("country") or data.get("circuit", ""), data.get("session_short", "")]
         header = " ".join(b for b in header_bits if b)
-        tail = data.get("lap") or data.get("flag") or data.get("status", "")
+        state = data.get("flag", "")
+        # A red flag or safety car outranks the lap counter: it is the thing
+        # you actually want to know, and the lap is on the board the rest of
+        # the time anyway.
+        tail = STATE_TAIL.get(state) or data.get("lap") or data.get("status", "")
         lines = [pad_row(header, tail, width)]
 
         if width <= 15:
             top = entries[:3]
             lines.append(" ".join(f"{e['position']}{e['code']}" for e in top))
-            gaps = [e["gap"] or e["interval"] for e in top[1:]]
-            lines.append(("GAP " + " ".join(g for g in gaps if g)).strip())
+            gaps = [g for g in (e["gap"] or e["interval"] for e in top[1:]) if g]
+            # Gaps legitimately vanish when nothing is moving — a suspension
+            # records no intervals at all. Say why instead of a bare "GAP".
+            if gaps:
+                lines.append(f"GAP {' '.join(gaps)}")
+            else:
+                lines.append(STATE_LABEL.get(state, ""))
         else:
             for entry in entries[: rows - 1]:
                 right = (entry["gap"] or entry["interval"] or "")
@@ -1098,6 +1110,46 @@ def _text(value: Any) -> str:
     if value is None or isinstance(value, (dict, list, tuple, set)):
         return ""
     return str(value)
+
+
+def _derive_race_state(rows: List[Dict[str, Any]]) -> str:
+    """Replay race control chronologically and return the state now.
+
+    Latest event wins, with one exception: a safety car does not downgrade a
+    red flag. Zandvoort 2026 put "SAFETY CAR LIGHTS ON" five minutes before
+    the restart while the race was still formally suspended.
+    """
+    state = ""
+    for row in sorted(rows, key=lambda r: str(r.get("date") or "")):
+        message = sanitize(row.get("message"))
+        flag = sanitize(row.get("flag"))
+        scope = sanitize(row.get("scope"))
+
+        # Word boundaries matter here: "CHEQUERED FLAG" contains "RED FLAG"
+        # as a substring, and a plain `in` test ends the race under a red.
+        if RED_FLAG.search(message) or "RACE SUSPENDED" in message or (flag == "RED" and scope == "TRACK"):
+            state = "RED"
+        elif "VSC DEPLOYED" in message or "VIRTUAL SAFETY CAR DEPLOYED" in message:
+            state = "VSC"
+        elif "VSC ENDING" in message or "VIRTUAL SAFETY CAR ENDING" in message:
+            state = "" if state == "VSC" else state
+        elif "SAFETY CAR DEPLOYED" in message or "SAFETY CAR LIGHTS ON" in message:
+            state = state if state == "RED" else "SC"
+        elif "SAFETY CAR IN THIS LAP" in message:
+            state = "" if state == "SC" else state
+        elif message in ("RACE START", "STANDING START", "ROLLING START", "RACE RESTART"):
+            state = ""
+        elif flag == "CHEQUERED":
+            state = "CHEQUERED"
+        elif flag == "GREEN" and scope == "TRACK" and state != "CHEQUERED":
+            state = ""
+    return state
+
+
+# What each state reads as on the board: a short tail for row 1, and a longer
+# label for row 3 when there are no gaps to show anyway.
+STATE_TAIL = {"RED": "RED", "SC": "SC", "VSC": "VSC", "CHEQUERED": "CHEQ"}
+STATE_LABEL = {"RED": "SUSPENDED", "SC": "SAFETY CAR", "VSC": "VIRTUAL SC", "CHEQUERED": "FINISHED"}
 
 
 def _dict_rows(value: Any) -> List[Dict[str, Any]]:

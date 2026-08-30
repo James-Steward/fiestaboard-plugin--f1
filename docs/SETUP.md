@@ -134,6 +134,30 @@ overnight sessions — and a European race weekend has several, in Australian
 time — FiestaBoard's own **Silence Schedule** will hold the board still
 without disabling the plugin.
 
+### Safety cars and red flags
+
+When a session is neutralised the state replaces the lap counter, because
+that's the thing worth knowing:
+
+```
++---------------+   +---------------+
+|NED RACE    RED|   |NED RACE    VSC|
+|1NOR 2RUS 3ANT |   |1NOR 2RUS 3ANT |
+|SUSPENDED      |   |GAP +1.2 +3.4  |
++---------------+   +---------------+
+```
+
+Under a red flag no interval data is recorded at all — nothing is moving —
+so row 3 says `SUSPENDED` rather than showing an empty `GAP`.
+
+OpenF1 splits this across three race-control categories and you need all of
+them: `SafetyCar` carries `VSC DEPLOYED`, `Flag` carries the chequered flag,
+and **only** `Other` carries `RED FLAG - RACE SUSPENDED`. The plugin makes one
+unfiltered request and derives the state itself.
+
+Per-sector yellow flags are deliberately ignored — they're frequent, local,
+and would flicker the board without telling you much.
+
 ### Team colours on the standings pages
 
 The driver and constructor standings render each team as a block of coloured
@@ -194,7 +218,7 @@ Session, Championship and Display, each with a description and example value.
 | `circuit` / `country` | `ZANDVOORT` / `NED` | |
 | `lap` | `L34/72` | Drops the total where it isn't known |
 | `lap_current` / `lap_total` | `34` / `72` | |
-| `flag` | `YELLOW` | `GREEN`, `YELLOW`, `RED`, `SAFETY CAR`, `VSC`, `CHEQUERED` |
+| `flag` / `track_status` | `VSC` | Race state: `RED`, `SC`, `VSC`, `CHEQUERED`, or blank while racing |
 | `leader` / `leader_name` / `leader_team` | `ANT` / `ANTONELLI` / `MERCEDES` | |
 | `p1` `p2` `p3` | `ANT` `HAM` `NOR` | Current top three |
 | `gap_p2` / `gap_p3` | `+1.2` | `LEADER`, `+1.2`, `+2M`, `DNF` |
